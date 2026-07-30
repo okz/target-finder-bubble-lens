@@ -399,6 +399,8 @@ class NinjaCursors(QtWidgets.QWidget):
     DEFAULT_TOP_HALF_EXTRA_Y = 0.0
     DEFAULT_SELECTION_HOLD = 2.0
     DEFAULT_LOCK_ON_DWELL = False
+    DEFAULT_LOCK_ON_KEY = False
+    LOCK_KEY_NAME = "space"
     DEFAULT_SHOW_GAZE = False
     ACTIVE_ORANGE = QtGui.QColor(255, 132, 0, 230)
     ACTIVE_ORANGE_FILL = QtGui.QColor(255, 132, 0, 34)
@@ -413,6 +415,10 @@ class NinjaCursors(QtWidgets.QWidget):
     DEBUG_TEXT_REFRESH_SEC = 1.0
     GAZE_VALID_TTL_SEC = 0.6
     GAZE_DISPLAY_SMOOTHING = 0.68
+    FIXATION_GATE_RADIUS_PX = 110.0
+    FIXATION_GATE_DURATION_SEC = 0.3
+    FIXATION_GATE_TIMEOUT_SEC = 3.0
+    FIXATION_GATE_GRACE_SEC = 0.12
     GAZE_DROPOUT_NORM_EPS = 1e-6
     GAZE_STABLE_SWITCH_NEAR_FRACTION = 0.16
     GAZE_STABLE_SWITCH_MAX_SPEED_PX_S = 220.0
@@ -472,6 +478,7 @@ class NinjaCursors(QtWidgets.QWidget):
         gaze_gain_y: float = DEFAULT_GAZE_GAIN_Y,
         selection_hold: float = DEFAULT_SELECTION_HOLD,
         lock_on_dwell: bool = DEFAULT_LOCK_ON_DWELL,
+        lock_on_key: bool = DEFAULT_LOCK_ON_KEY,
         show_gaze: bool = DEFAULT_SHOW_GAZE,
         show_debug_status: bool = True,
         snap_system_cursor_to_active: bool = False,
@@ -518,6 +525,7 @@ class NinjaCursors(QtWidgets.QWidget):
         self.top_half_extra_y = float(self.DEFAULT_TOP_HALF_EXTRA_Y)
         self.selection_hold = max(0.0, float(selection_hold))
         self.lock_on_dwell = bool(lock_on_dwell)
+        self.lock_on_key = bool(lock_on_key)
         self.show_gaze = bool(show_gaze)
         self.show_debug_status = bool(show_debug_status)
         self.snap_system_cursor_to_active = bool(snap_system_cursor_to_active)
@@ -525,12 +533,18 @@ class NinjaCursors(QtWidgets.QWidget):
         self._auto_calibrate = auto_calibrate
         self._auto_calibrate_delay_ms = max(0, int(round(float(auto_calibrate_delay) * 1000)))
         self._experiment_control_file = pathlib.Path(experiment_control_file) if experiment_control_file else None
+        self._fixation_status_path = (
+            pathlib.Path(str(self._experiment_control_file) + ".fixation")
+            if self._experiment_control_file is not None
+            else None
+        )
         self._last_experiment_control_state = None
         self.disable_keyboard_quit = bool(disable_keyboard_quit)
 
         self._mouse_listener = None
         self._keyboard_listener = None
         self._gaze_timer = None
+        self._capture = None
         self._paint_timer = None
         self._cursor_refresh_timer = None
         self._win_quit_poll_timer = None
@@ -568,6 +582,10 @@ class NinjaCursors(QtWidgets.QWidget):
         self._last_observed_mouse = None
         self._ignore_next_mouse_delta = True
         self._capture_visuals_suspended = False
+        self._fixation_start_t: float | None = None
+        self._fixation_last_within_t: float | None = None
+        self._fixation_emitted = False
+        self._fixation_gate_entered_t = 0.0
 
         self._calibration = None
         self._calib_status_text = ""
@@ -603,6 +621,7 @@ class NinjaCursors(QtWidgets.QWidget):
         self._reset_runtime_debug_log()
         self._log_runtime_configuration()
         self._load_last_gaze_affine_matrix()
+
         self._capture = cv2.VideoCapture(self.camera_index)
         if not self._capture.isOpened():
             raise RuntimeError(f"Could not open webcam index {self.camera_index}.")
@@ -812,6 +831,7 @@ class NinjaCursors(QtWidgets.QWidget):
         return (
             state.startswith("ready")
             or state.startswith("calibrate")
+            or state.startswith("fixate")
             or state.startswith("active")
         )
 
@@ -854,7 +874,12 @@ class NinjaCursors(QtWidgets.QWidget):
         if not self.snap_system_cursor_to_active:
             return
         state = self._read_experiment_control_state()
-        if state.startswith("ready") or state.startswith("calibrate") or state.startswith("paused"):
+        if (
+            state.startswith("ready")
+            or state.startswith("calibrate")
+            or state.startswith("fixate")
+            or state.startswith("paused")
+        ):
             return
         self._set_system_cursor_reference(self._system_cursor_reference_point())
         self._hide_system_cursor_if_needed(state)
@@ -864,7 +889,7 @@ class NinjaCursors(QtWidgets.QWidget):
         if not self._should_hide_system_cursor_for_state(state):
             return
         self._hide_system_cursor_if_needed(state)
-        if state.startswith("ready") or state.startswith("calibrate"):
+        if state.startswith("ready") or state.startswith("calibrate") or state.startswith("fixate"):
             self._lock_real_cursor_at_anchor()
 
     def _screen_for_point(self, x: int, y: int):
@@ -889,7 +914,7 @@ class NinjaCursors(QtWidgets.QWidget):
         observed_x = float(pos.x())
         observed_y = float(pos.y())
         state = self._read_experiment_control_state()
-        if state.startswith("ready") or state.startswith("calibrate"):
+        if state.startswith("ready") or state.startswith("calibrate") or state.startswith("fixate"):
             self._lock_real_cursor_at_anchor()
             return self._last_observed_mouse[0], self._last_observed_mouse[1], 0.0, 0.0, False
         if state.startswith("paused"):
@@ -935,7 +960,7 @@ class NinjaCursors(QtWidgets.QWidget):
         parts = state.split()
         if len(parts) < 3:
             return
-        if not parts[0].startswith(("ready", "active")):
+        if not parts[0].startswith(("ready", "active", "fixate")):
             return
         try:
             x = float(parts[1])
@@ -957,6 +982,13 @@ class NinjaCursors(QtWidgets.QWidget):
             if state.startswith("paused"):
                 self._reset_experiment_layout(lock_real_cursor=False)
                 restore_default_cursors()
+            elif state.startswith("fixate"):
+                self._reset_experiment_layout()
+                self._hide_system_cursor_if_needed(state)
+                self._fixation_start_t = None
+                self._fixation_last_within_t = None
+                self._fixation_emitted = False
+                self._fixation_gate_entered_t = time.time()
             elif state.startswith("ready") or state.startswith("active"):
                 self._reset_experiment_layout()
                 self._hide_system_cursor_if_needed(state)
@@ -970,7 +1002,12 @@ class NinjaCursors(QtWidgets.QWidget):
 
     def _experiment_is_paused(self) -> bool:
         state = self._read_experiment_control_state()
-        return state.startswith("paused") or state.startswith("ready") or state.startswith("calibrate")
+        return (
+            state.startswith("paused")
+            or state.startswith("ready")
+            or state.startswith("calibrate")
+            or state.startswith("fixate")
+        )
 
     def _apply_mouse_delta(self, dx: float, dy: float):
         self._raw_offset_x += dx
@@ -1131,7 +1168,7 @@ class NinjaCursors(QtWidgets.QWidget):
             and (current_dist_sq - candidate_dist_sq) < switch_margin_px * switch_margin_px
         )
         if (
-            not self.lock_on_dwell
+            not self._lock_enabled()
             and self._active_cursor_id is not None
             and candidate_id != self._active_cursor_id
             and near_boundary
@@ -1172,7 +1209,7 @@ class NinjaCursors(QtWidgets.QWidget):
                 candidates,
                 key=lambda item: dist_sq(item[1]),
             )
-            if not self.lock_on_dwell:
+            if not self._lock_enabled():
                 col_xs = sorted({round(float(point[0]), 3) for _cursor_id, point in candidates})
                 gaps = [b - a for a, b in zip(col_xs, col_xs[1:]) if b > a]
                 col_gap = min(gaps) if gaps else float(self.rake_spacing)
@@ -1192,10 +1229,13 @@ class NinjaCursors(QtWidgets.QWidget):
             if candidate_id != self._candidate_cursor_id:
                 self._candidate_cursor_id = candidate_id
                 self._candidate_since = now
-            dwell_time = max(0.0, float(self.selection_hold))
-            if dwell_time <= 0.0 or (now - self._candidate_since) >= dwell_time:
-                self._lock_active_cursor(candidate_id)
-                return candidate_id
+            if self.lock_on_dwell:
+                dwell_time = max(0.0, float(self.selection_hold))
+                if dwell_time <= 0.0 or (now - self._candidate_since) >= dwell_time:
+                    self._lock_active_cursor(candidate_id)
+                    return candidate_id
+            # lock_on_key: track the candidate (for the confirm-key handler
+            # to lock explicitly) but never auto-lock on a timer.
             self._active_cursor_id = candidate_id
             return candidate_id
 
@@ -1225,6 +1265,33 @@ class NinjaCursors(QtWidgets.QWidget):
         self._active_cursor_id = active_id
         self._candidate_cursor_id = active_id
         self._candidate_since = time.time()
+
+    def _lock_enabled(self) -> bool:
+        """True when a cursor must be locked before it can be clicked --
+        either by gaze dwell (lock_on_dwell) or by the confirm key
+        (lock_on_key). Both share the same candidate-tracking behavior in
+        _active_cursor_from_gaze; only the trigger for _lock_active_cursor
+        differs (a timer vs. an explicit key press).
+        """
+        return bool(self.lock_on_dwell or self.lock_on_key)
+
+    @QtCore.pyqtSlot()
+    def _trigger_key_lock(self):
+        """Called (via a queued invoke from the pynput key listener thread)
+        when the user presses the confirm key to lock the current candidate
+        cursor -- the manual-confirmation counterpart to lock_on_dwell's
+        timer-based auto-lock.
+        """
+        if not self.lock_on_key or self._cursor_locked:
+            return
+        if self._experiment_is_paused():
+            return
+        if self._active_cursor_id is None:
+            return
+        # Already-recorded via the "cursor_locked" field in the regular
+        # cursor_sample stream (log_cursor_sample); no separate event needed.
+        self._lock_active_cursor(self._active_cursor_id)
+        self.update()
 
     def _unlock_cursor_selection(self):
         self._cursor_locked = False
@@ -1272,8 +1339,57 @@ class NinjaCursors(QtWidgets.QWidget):
             self._log_runtime_debug(message)
             self._last_gaze_debug_t = now
 
+    def _write_fixation_status(self, status: str):
+        if self._fixation_status_path is None:
+            return
+        try:
+            self._fixation_status_path.write_text(status, encoding="utf-8")
+        except OSError:
+            pass
+
+    def _tick_fixation_gate(self):
+        state = self._read_experiment_control_state()
+        if not state.startswith("fixate") or self._fixation_emitted:
+            return
+        now = time.time()
+        gaze = self._display_gaze_point
+        within_radius = False
+        if gaze is not None and self._gaze_is_recent():
+            dx = gaze[0] - self._anchor_point.x()
+            dy = gaze[1] - self._anchor_point.y()
+            within_radius = (dx * dx + dy * dy) <= (self.FIXATION_GATE_RADIUS_PX ** 2)
+        if within_radius:
+            self._fixation_last_within_t = now
+            if self._fixation_start_t is None:
+                self._fixation_start_t = now
+            elif now - self._fixation_start_t >= self.FIXATION_GATE_DURATION_SEC:
+                self._fixation_emitted = True
+                self._write_fixation_status("achieved")
+                _emit_calibration_event(
+                    "fixation_achieved",
+                    anchor=[self._anchor_point.x(), self._anchor_point.y()],
+                )
+                return
+        elif (
+            self._fixation_start_t is not None
+            and self._fixation_last_within_t is not None
+            and now - self._fixation_last_within_t > self.FIXATION_GATE_GRACE_SEC
+        ):
+            # Tolerate a brief blip outside the radius (jitter/microsaccade)
+            # without throwing away dwell progress -- only a sustained look-away
+            # resets the timer.
+            self._fixation_start_t = None
+        if now - self._fixation_gate_entered_t >= self.FIXATION_GATE_TIMEOUT_SEC:
+            self._fixation_emitted = True
+            self._write_fixation_status("timeout")
+            _emit_calibration_event(
+                "fixation_gate_timeout",
+                anchor=[self._anchor_point.x(), self._anchor_point.y()],
+            )
+
     @QtCore.pyqtSlot()
     def _update_gaze(self):
+        self._tick_fixation_gate()
         if self._gaze_blocked_reason:
             self._tracking_ok = False
             self._gaze_point = None
@@ -1474,8 +1590,10 @@ class NinjaCursors(QtWidgets.QWidget):
             freshness = "recent" if self._gaze_is_recent() else "stale"
             if self._cursor_locked:
                 cursor_state = "locked"
-            elif not self.lock_on_dwell:
+            elif not self._lock_enabled():
                 cursor_state = "direct"
+            elif self.lock_on_key:
+                cursor_state = "candidate (press key to lock)"
             elif self._candidate_cursor_id is not None and self._candidate_cursor_id == self._active_cursor_id:
                 dwell_elapsed = max(0.0, time.time() - self._candidate_since)
                 cursor_state = f"candidate {dwell_elapsed:.2f}/{self.selection_hold:.2f}s"
@@ -1503,7 +1621,9 @@ class NinjaCursors(QtWidgets.QWidget):
             QtCore.Qt.AlignmentFlag.AlignLeft,
             (
                 "Look at one cursor and click while it is active."
-                if not self.lock_on_dwell
+                if not self._lock_enabled()
+                else f"Look at one cursor and press {self.LOCK_KEY_NAME} to lock it, then click."
+                if self.lock_on_key
                 else "Look at one cursor and keep your gaze there to lock it, then use the mouse for local refinement."
             ),
         )
@@ -1519,9 +1639,12 @@ class NinjaCursors(QtWidgets.QWidget):
             "calibration_applied": bool(calibration is not None and calibration.is_calibrated),
             "calibration_points": int(self._calib_points),
             "lock_on_dwell": bool(self.lock_on_dwell),
+            "lock_on_key": bool(self.lock_on_key),
             "selection_mode": (
                 "nearest_gaze_cursor_with_dwell_lock"
                 if self.lock_on_dwell
+                else "nearest_gaze_cursor_with_key_lock"
+                if self.lock_on_key
                 else "nearest_gaze_cursor_direct_click"
             ),
         }
@@ -1535,7 +1658,7 @@ class NinjaCursors(QtWidgets.QWidget):
         }
 
     def _cursor_can_click(self) -> bool:
-        return self._active_point is not None and (self._cursor_locked or not self.lock_on_dwell)
+        return self._active_point is not None and (self._cursor_locked or not self._lock_enabled())
 
     def _ready_active_cursor_id(
         self,
@@ -1601,6 +1724,44 @@ class NinjaCursors(QtWidgets.QWidget):
             painter.drawEllipse(QtCore.QPointF(gx, gy), 12, 12)
         painter.end()
 
+    def _paint_fixation_gate(self):
+        self._lock_real_cursor_at_anchor()
+        self._hide_system_cursor_if_needed()
+
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        painter.setCompositionMode(QtGui.QPainter.CompositionMode.CompositionMode_Source)
+        painter.fillRect(self.rect(), QtCore.Qt.GlobalColor.transparent)
+        painter.setCompositionMode(QtGui.QPainter.CompositionMode.CompositionMode_SourceOver)
+
+        ax = self._anchor_point.x()
+        ay = self._anchor_point.y()
+        outer_radius = self.FIXATION_GATE_RADIUS_PX
+        painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 130), 2))
+        painter.setBrush(QtGui.QColor(255, 255, 255, 16))
+        painter.drawEllipse(QtCore.QPointF(ax, ay), outer_radius, outer_radius)
+
+        if self._fixation_start_t is not None:
+            elapsed = time.time() - self._fixation_start_t
+            progress = max(0.0, min(1.0, elapsed / self.FIXATION_GATE_DURATION_SEC))
+            shrink_radius = outer_radius * (1.0 - progress)
+            painter.setPen(QtGui.QPen(QtGui.QColor(120, 220, 120, 220), 3))
+            painter.setBrush(QtGui.QColor(120, 220, 120, 40))
+            painter.drawEllipse(QtCore.QPointF(ax, ay), shrink_radius, shrink_radius)
+
+        line_len = 8
+        painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 220), 2))
+        painter.drawLine(QtCore.QLineF(ax, ay - line_len, ax, ay + line_len))
+        painter.drawLine(QtCore.QLineF(ax - line_len, ay, ax + line_len, ay))
+
+        drawn_gaze = self._drawn_gaze_point()
+        if self.show_gaze and drawn_gaze is not None:
+            gx, gy = drawn_gaze
+            painter.setPen(QtGui.QPen(QtGui.QColor(255, 90, 90, 220), 2))
+            painter.setBrush(QtGui.QColor(255, 90, 90, 24))
+            painter.drawEllipse(QtCore.QPointF(gx, gy), 12, 12)
+        painter.end()
+
     def paintEvent(self, event):
         state = self._read_experiment_control_state()
         if self._capture_visuals_suspended:
@@ -1618,6 +1779,10 @@ class NinjaCursors(QtWidgets.QWidget):
 
         if state.startswith("ready"):
             self._paint_ready_cursors()
+            return
+
+        if state.startswith("fixate"):
+            self._paint_fixation_gate()
             return
 
         if state.startswith("paused") or state.startswith("calibrate"):
@@ -1642,7 +1807,7 @@ class NinjaCursors(QtWidgets.QWidget):
             return
 
         active_id = self._active_cursor_from_gaze(points)
-        if mouse_moved and (self._cursor_locked or not self.lock_on_dwell):
+        if mouse_moved and (self._cursor_locked or not self._lock_enabled()):
             self._apply_mouse_delta(dx, dy)
             points = self._recover_points_if_all_offscreen(self._grid_points())
             active_id = self._active_cursor_from_gaze(points)
@@ -1687,7 +1852,7 @@ class NinjaCursors(QtWidgets.QWidget):
             return
 
         ax, ay = self._active_point
-        if (self._cursor_locked or not self.lock_on_dwell) and self.detector is not None:
+        if (self._cursor_locked or not self._lock_enabled()) and self.detector is not None:
             self._active_target = self.detector.find_detection_for_point(
                 float(ax),
                 float(ay),
@@ -1777,6 +1942,7 @@ class NinjaCursors(QtWidgets.QWidget):
                 "tracking_ok": bool(self._tracking_ok),
                 "dwell_lock_time": round(float(self.selection_hold), 3),
                 "lock_on_dwell": bool(self.lock_on_dwell),
+                "lock_on_key": bool(self.lock_on_key),
                 "cursor_locked": bool(self._cursor_locked),
                 "candidate_cursor_id": list(self._candidate_cursor_id) if self._candidate_cursor_id is not None else None,
                 "candidate_elapsed_ms": round(float(candidate_elapsed_ms), 3),
@@ -1790,6 +1956,8 @@ class NinjaCursors(QtWidgets.QWidget):
                 "selection_mode": (
                     "nearest_gaze_cursor_with_dwell_lock"
                     if self.lock_on_dwell
+                    else "nearest_gaze_cursor_with_key_lock"
+                    if self.lock_on_key
                     else "nearest_gaze_cursor_direct_click"
                 ),
                 "cursor_count": self.CURSOR_ROWS * self.CURSOR_COLS,
@@ -1937,6 +2105,11 @@ class NinjaCursors(QtWidgets.QWidget):
                         self, "_start_calibration",
                         QtCore.Qt.ConnectionType.QueuedConnection,
                     )
+            if self.lock_on_key and key == keyboard.Key.space:
+                QtCore.QMetaObject.invokeMethod(
+                    self, "_trigger_key_lock",
+                    QtCore.Qt.ConnectionType.QueuedConnection,
+                )
 
         def on_release(key):
             self._pressed_keys.discard(key)
@@ -2344,6 +2517,7 @@ def main():
     parser.add_argument("--gaze-gain", type=float, default=2.0, help="Deprecated compatibility option from the old local-direction cursor version; ignored by this 8-cursor version")
     parser.add_argument("--selection-hold", type=float, default=NinjaCursors.DEFAULT_SELECTION_HOLD, help="Seconds gaze must remain on the same cursor before it locks automatically")
     parser.add_argument("--lock-on-dwell", action="store_true", help="Require gaze dwell locking before clicks. By default, the currently active cursor can be clicked immediately.")
+    parser.add_argument("--lock-on-key", action="store_true", help=f"Require pressing {NinjaCursors.LOCK_KEY_NAME} to lock the current candidate cursor (turns green) before clicking, instead of clicking the active cursor immediately or dwell-locking.")
     parser.add_argument("--hide-gaze-point", action="store_true", help="Hide the red on-screen gaze feedback marker")
     parser.add_argument("--hide-debug-status", action="store_true", help="Hide the on-screen Ninja gaze tracking status overlay")
     parser.add_argument("--snap-system-cursor-to-active", action="store_true", help="Move the native system cursor to the currently active Ninja cursor to reduce visual mismatch on macOS")
@@ -2405,6 +2579,7 @@ def main():
             failed_calibration_file=str(EyeCalibration.last_failed_calibration_path()),
             selection_hold=args.selection_hold,
             lock_on_dwell=bool(args.lock_on_dwell),
+            lock_on_key=bool(args.lock_on_key),
             show_gaze=not args.hide_gaze_point,
             snap_system_cursor_to_active=bool(args.snap_system_cursor_to_active),
             without_targetfinder=bool(args.without_targetfinder),
@@ -2415,6 +2590,8 @@ def main():
             selection_mode=(
                 "nearest_gaze_cursor_with_dwell_lock"
                 if args.lock_on_dwell
+                else "nearest_gaze_cursor_with_key_lock"
+                if args.lock_on_key
                 else "nearest_gaze_cursor_direct_click"
             ),
             keyboard_quit_enabled=not args.disable_keyboard_quit,
@@ -2436,6 +2613,7 @@ def main():
         gaze_gain_y=args.gaze_gain_y,
         selection_hold=args.selection_hold,
         lock_on_dwell=args.lock_on_dwell,
+        lock_on_key=args.lock_on_key,
         show_gaze=not args.hide_gaze_point,
         show_debug_status=not args.hide_debug_status,
         snap_system_cursor_to_active=args.snap_system_cursor_to_active,

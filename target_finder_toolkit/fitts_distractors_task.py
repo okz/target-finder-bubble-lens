@@ -18,6 +18,7 @@ import json
 import math
 import os
 import random
+import signal
 import subprocess
 import sys
 import tempfile
@@ -72,6 +73,7 @@ DEFAULT_MAX_CLICKS = 1
 DEFAULT_CURSOR_HZ = 30.0
 HEADER_HEIGHT = 64
 RELEASE_GUARD_MS = 120
+NINJA_FIXATION_HARD_TIMEOUT_SEC = 6.0
 HOME_RADIUS = 24.0
 MIN_DISTRACTOR_DIAMETER = 6.0
 MIN_TARGET_DIAMETER = 0.0
@@ -199,8 +201,15 @@ def circle_bbox(cx: float, cy: float, diameter: float) -> tuple[float, float, fl
     return (cx - radius, cy - radius, diameter, diameter)
 
 
-def circle_contains(obj: SyntheticObject, x: float, y: float) -> bool:
-    return math.hypot(x - obj.center[0], y - obj.center[1]) <= obj.diameter / 2.0
+# Clicks a few pixels outside the drawn target boundary still register as hits.
+# Real click coordinates carry a bit of unavoidable pixel-level jitter that
+# users can't perceive, so a strictly literal radius check punishes clicks
+# that visually landed on the target.
+CLICK_HIT_TOLERANCE_PX = 8.0
+
+
+def circle_contains(obj: SyntheticObject, x: float, y: float, *, tolerance: float = CLICK_HIT_TOLERANCE_PX) -> bool:
+    return math.hypot(x - obj.center[0], y - obj.center[1]) <= obj.diameter / 2.0 + tolerance
 
 
 def object_to_log(obj: SyntheticObject) -> dict:
@@ -513,6 +522,8 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
         self._last_recenter_log_at = 0.0
         self._window_shown_logged = False
         self._waiting_for_ninja_calibration = False
+        self._waiting_for_ninja_fixation = False
+        self._ninja_fixation_wait_started_at = 0.0
         self._ninja_calibration_retries_left = NINJA_CALIBRATION_MAX_RETRIES
         self._process_output_buffer = ""
         self._process_output_lines: list[str] = []
@@ -542,6 +553,9 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
         self.technique_watch_timer = QtCore.QTimer(self)
         self.technique_watch_timer.setInterval(100)
         self.technique_watch_timer.timeout.connect(self._check_technique_process)
+        self._ninja_fixation_poll_timer = QtCore.QTimer(self)
+        self._ninja_fixation_poll_timer.setInterval(30)
+        self._ninja_fixation_poll_timer.timeout.connect(self._check_ninja_fixation_gate)
 
         self._escape_shortcut = QtGui.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key.Key_Escape), self)
         self._escape_shortcut.setContext(QtCore.Qt.ShortcutContext.ApplicationShortcut)
@@ -665,18 +679,11 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
                     "technique_log_file": str(self.technique_log_file) if self.technique_log_file else None,
                 }
             )
-            # Keep watching the technique subprocess for the rest of the
-            # session, not just while waiting for calibration: if it exits
-            # unexpectedly (crash, or the participant quitting Ninja Cursors
-            # with its own "q" shortcut while its overlay has OS focus), this
-            # window has no other way to notice and would otherwise keep
-            # running with a dead/frozen cursor for the rest of the session.
+            # Keep watching the technique process for the whole session, not
+            # just during calibration, so an unexpected exit ends the trial.
             self.technique_watch_timer.start()
             if waits_for_ninja_calibration:
-                # The Fitts task must not start trials before Ninja Cursors has
-                # actually finished (successfully) calibrating: without this,
-                # the cursors run on an uncalibrated/blocked gaze estimate and
-                # appear frozen on whichever cursor was selected by default.
+                # Don't start trials before Ninja Cursors finishes calibrating.
                 self._waiting_for_ninja_calibration = True
                 return
             QtCore.QTimer.singleShot(1200, self._next_trial)
@@ -771,16 +778,15 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
             self._process_output_buffer = ""
         self.logger.write({"type": "technique_process_exit", "exit_code": exit_code})
         self.technique_watch_timer.stop()
+        self._ninja_fixation_poll_timer.stop()
+        self._waiting_for_ninja_fixation = False
         if self._waiting_for_ninja_calibration:
             self._waiting_for_ninja_calibration = False
             self.logger.write({"type": "ninja_calibration_blocked_session", "event": "process_exited"})
             self._abort_session("ninja_exited_during_calibration")
             return
-        # The technique subprocess died on its own outside the calibration
-        # wait (crashed, or the participant quit it directly -- e.g. Ninja
-        # Cursors' own "q" shortcut while its overlay has OS focus). Without
-        # this, the trial keeps running against a dead technique process
-        # (frozen/no-op cursor) instead of ending the session.
+        # Technique process died outside the calibration wait; end the
+        # session instead of continuing against a dead technique.
         if not self._session_ended and not self._aborting:
             self._abort_session("technique_exited_unexpectedly")
 
@@ -791,10 +797,57 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
         )
 
     def _ninja_pretrial_state(self) -> str:
-        return self._ninja_state_at_screen_center("ready")
+        return self._ninja_state_at_home("ready")
 
     def _ninja_active_state(self) -> str:
-        return self._ninja_state_at_screen_center("active")
+        return self._ninja_state_at_home("active")
+
+    def _ninja_fixation_state(self) -> str:
+        return self._ninja_state_at_home("fixate")
+
+    def _ninja_state_at_home(self, state: str) -> str:
+        if not self._uses_ninja_cursors():
+            return "paused"
+        home = self._home_global_position()
+        return f"{state} {int(home.x())} {int(home.y())}"
+
+    def _ninja_fixation_status_path(self) -> Path | None:
+        if self.ninja_control_file is None:
+            return None
+        return Path(str(self.ninja_control_file) + ".fixation")
+
+    def _start_ninja_fixation_wait(self):
+        status_path = self._ninja_fixation_status_path()
+        if status_path is not None:
+            status_path.unlink(missing_ok=True)
+        self._waiting_for_ninja_fixation = True
+        self._ninja_fixation_wait_started_at = time.monotonic()
+        self._set_ninja_control_state(self._ninja_fixation_state())
+        self._ninja_fixation_poll_timer.start()
+
+    def _check_ninja_fixation_gate(self):
+        if not self._waiting_for_ninja_fixation:
+            self._ninja_fixation_poll_timer.stop()
+            return
+        status_path = self._ninja_fixation_status_path()
+        try:
+            status = status_path.read_text(encoding="utf-8").strip() if status_path else ""
+        except OSError:
+            status = ""
+        # Hard fallback: never block the session indefinitely on the ninja
+        # subprocess's own fixation gate, even if it never writes a status
+        # file (missed poll, gaze drift, subprocess stall, etc.).
+        if status not in {"achieved", "timeout"}:
+            elapsed = time.monotonic() - self._ninja_fixation_wait_started_at
+            if elapsed < NINJA_FIXATION_HARD_TIMEOUT_SEC:
+                return
+            status = "hard_timeout"
+        self._ninja_fixation_poll_timer.stop()
+        self._waiting_for_ninja_fixation = False
+        self.logger.write({"type": "ninja_fixation_gate_event", "event": status})
+        self._set_ninja_control_state(self._ninja_active_state())
+        self.update()
+        QtCore.QTimer.singleShot(RELEASE_GUARD_MS, self._begin_movement)
 
     def _ninja_state_at_screen_center(self, state: str) -> str:
         if not self._uses_ninja_cursors():
@@ -1061,7 +1114,6 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
             self._move_cursor_to_home()
         if not self._uses_semantic_pointing():
             self._write_annotation_state("active")
-        self._set_ninja_control_state(self._ninja_active_state())
         self.logger.write(
             {
                 "type": "countdown_end",
@@ -1072,6 +1124,10 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
             }
         )
         self.update()
+        if self._uses_ninja_cursors():
+            self._start_ninja_fixation_wait()
+            return
+        self._set_ninja_control_state(self._ninja_active_state())
         QtCore.QTimer.singleShot(RELEASE_GUARD_MS, self._begin_movement)
 
     def _begin_movement(self):
@@ -1238,7 +1294,7 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
             }
         )
         self.update()
-        QtCore.QTimer.singleShot(550, self._next_trial)
+        QtCore.QTimer.singleShot(200, self._next_trial)
 
     def keyPressEvent(self, event: QtGui.QKeyEvent):
         if event.key() == QtCore.Qt.Key.Key_Escape:
@@ -1289,15 +1345,38 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
         self.countdown_timer.stop()
         self.cursor_sample_timer.stop()
         self.technique_watch_timer.stop()
+        self._ninja_fixation_poll_timer.stop()
+        self._waiting_for_ninja_fixation = False
         self._set_mouse_association(True)
         self._set_ninja_control_state("paused")
         self._write_annotation_state("inactive")
         if self.technique_process is not None and self.technique_process.poll() is None:
-            self.technique_process.terminate()
+            proc = self.technique_process
             try:
-                self.technique_process.wait(timeout=2)
+                if sys.platform.startswith("win"):
+                    proc.send_signal(signal.CTRL_BREAK_EVENT)
+                else:
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                    except Exception:
+                        proc.terminate()
+                # Ninja Cursors must release its webcam handle through its own
+                # SIGTERM cleanup before the next task tries to open the same
+                # camera; killing it early can leave the device stuck busy for
+                # a long time (control_complet's next task hangs on startup).
+                proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                self.technique_process.kill()
+                if not sys.platform.startswith("win"):
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except Exception:
+                        proc.kill()
+                else:
+                    proc.kill()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    pass
         close_windows_process_job(self.technique_process)
         restore_default_cursors()
         self.logger.write({"type": "session_end", "reason": reason})
@@ -1337,16 +1416,7 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
         else:
             misses_label = "misses" if is_english(self.language) else "erreurs"
             task_label = "Synthetic Fitts with distractors" if is_english(self.language) else "Fitts synthétique avec distracteurs"
-            block_index = self.session_metadata.get("block_index")
-            block_count = self.session_metadata.get("block_count")
-            if block_index is not None and block_count is not None:
-                block_label = (
-                    f"Block {block_index}/{block_count}"
-                    if is_english(self.language)
-                    else f"Bloc {block_index}/{block_count}"
-                )
-            else:
-                block_label = "Block" if is_english(self.language) else "Bloc"
+            technique_label = f"Technique: {self.technique}"
             condition_label = (
                 f"Condition {self.current_trial.condition_block_index or 1}/{self.condition_count}"
             )
@@ -1354,12 +1424,12 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
             repeat_index = self.current_trial.condition_repeat_index or self.current_trial.trial_id
             text = (
                 f"{task_label}  "
-                f"{block_label}  "
+                f"{technique_label}  "
                 f"{condition_label}  "
                 f"{trial_label} {repeat_index}/{self.trials_per_condition}  "
+                f"{misses_label}={self.miss_count}  "
                 f"ID={self.current_trial.id_value:g}  "
-                f"rho={self.current_trial.rho:g}  "
-                f"{misses_label}={self.miss_count}"
+                f"rho={self.current_trial.rho:g}"
             )
         painter.drawText(QtCore.QRectF(22, 0, self.width() - 44, HEADER_HEIGHT), QtCore.Qt.AlignmentFlag.AlignVCenter, text)
 
@@ -1478,6 +1548,7 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--ninja-gaze-offset-y", type=float, default=DEFAULT_NINJA_GAZE_OFFSET_Y)
     parser.add_argument("--ninja-selection-hold", type=float, default=DEFAULT_NINJA_SELECTION_HOLD)
     parser.add_argument("--ninja-lock-on-dwell", action="store_true")
+    parser.add_argument("--ninja-lock-on-key", action="store_true")
     parser.add_argument("--ninja-hide-gaze-point", action="store_true")
     parser.add_argument("--ninja-hide-debug-status", action="store_true")
     parser.add_argument("--ninja-snap-system-cursor-to-active", action="store_true")

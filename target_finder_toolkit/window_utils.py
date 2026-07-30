@@ -12,16 +12,9 @@ _qt_crash_guard_installed = False
 def install_qt_crash_guard() -> None:
     """Stop PyQt6 from calling ``abort()`` on an unhandled slot exception.
 
-    PyQt6's default ``sys.excepthook`` is the unmodified interpreter one; when
-    a Python exception escapes a slot invoked from C++ (e.g. a QTimer
-    callback such as the gaze/paint update loop), PyQt6 prints the traceback
-    and then calls ``qFatal()``, which aborts the whole process
-    (EXC_CRASH/SIGABRT). On macOS that abort tears down the app's fullscreen
-    window/Space immediately, which is what shows up as "jumps straight to
-    the desktop" right when something goes wrong mid-session. Installing any
-    custom ``sys.excepthook`` disables that abort-on-exception behavior, so a
-    bug in a single timer tick is logged and the app keeps running instead of
-    crashing outright.
+    Without a custom ``sys.excepthook``, an exception escaping a Qt slot
+    (e.g. a QTimer callback) makes PyQt6 call ``qFatal()`` and abort the
+    process. Logging the exception here instead keeps the app running.
     """
     global _qt_crash_guard_installed
     if _qt_crash_guard_installed:
@@ -37,16 +30,10 @@ def install_qt_crash_guard() -> None:
 def warm_up_macos_keyboard_layout() -> None:
     """Pre-fetch the current keyboard input source on the main thread.
 
-    pynput's macOS keyboard.Listener resolves the active keyboard layout
-    (TISCopyCurrentKeyboardInputSource / TISGetInputSourceProperty) the first
-    time its background listener thread starts. On recent macOS versions that
-    lazy lookup happens off the main thread and can trip an internal
-    ``dispatch_assert_queue`` check, crashing the whole process with
-    EXC_BREAKPOINT/SIGTRAP (seen right after eye calibration, when the
-    keyboard listener thread handles its first real key event). Calling the
-    same lookup once from the main thread before starting the listener
-    populates Apple's cache so the later off-thread call is a cheap hit
-    instead of a cold, assert-checked one.
+    pynput's macOS keyboard.Listener resolves the keyboard layout on its own
+    background thread the first time it starts, which can trip a
+    dispatch_assert_queue check and crash the process. Doing the same lookup
+    here first, on the main thread, avoids that.
     """
     if sys.platform != "darwin":
         return

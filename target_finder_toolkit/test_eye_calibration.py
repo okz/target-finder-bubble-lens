@@ -18,14 +18,20 @@ class _FakeTracker:
             P=np.full((4, 4), 2.0, dtype=np.float64),
         )
         self.adapt_called = False
+        self.adapt_kwargs = None
 
-    def adapt_from_gaze_results(self, *_args, **_kwargs):
+    def adapt_from_gaze_results(self, gaze_results, norm_pogs, **kwargs):
+        # No infer_fn on this fake tracker, so EyeCalibration falls back to
+        # the pre-adaptation norm_pog values it already collected -- this
+        # fake only needs to record that adaptation was requested and with
+        # what hyperparameters, not actually change any model weights.
         self.adapt_called = True
-        raise AssertionError("calibration must not change WebEyeTrack model weights")
+        self.adapt_kwargs = kwargs
+        self.adapt_sample_count = len(gaze_results)
 
 
 class EyeCalibrationTest(unittest.TestCase):
-    def test_fit_initializes_manual_correction_without_adapting_tracker(self):
+    def test_fit_adapts_model_then_initializes_manual_correction(self):
         screen_w, screen_h = 1000, 800
         done = []
         calibration = EyeCalibration(
@@ -56,7 +62,10 @@ class EyeCalibrationTest(unittest.TestCase):
             calibration.SAVE_DIR = Path(tmpdir)
             calibration._fit()
 
-        self.assertFalse(tracker.adapt_called)
+        self.assertTrue(tracker.adapt_called)
+        self.assertEqual(tracker.adapt_kwargs["steps_inner"], EyeCalibration.MAML_STEPS_INNER)
+        self.assertEqual(tracker.adapt_kwargs["inner_lr"], EyeCalibration.MAML_INNER_LR)
+        self.assertFalse(tracker.adapt_kwargs["affine_transform"])
         self.assertTrue(calibration.is_calibrated)
         self.assertIsNone(tracker.affine_matrix)
         self.assertIsNone(tracker.affine_matrix_tf)
@@ -214,6 +223,66 @@ class EyeCalibrationTest(unittest.TestCase):
         self.assertFalse((Path(tmpdir) / "last_calibration.json").exists())
         self.assertFalse(saved["accepted"])
         self.assertIn("one calibration point error too high", saved["failure_reason"])
+
+    def test_fit_uses_reinferred_pog_after_adaptation(self):
+        """After adaptation, the affine fit must use fresh model output, not
+        the stale pre-adaptation norm_pog collected during calibration."""
+        screen_w, screen_h = 1000, 800
+        done = []
+        calibration = EyeCalibration(
+            screen_w,
+            screen_h,
+            num_points=5,
+            on_done=lambda success, error: done.append((success, error)),
+        )
+        class _AdaptingTracker(_FakeTracker):
+            def __init__(self, targets_norm):
+                super().__init__()
+                self.infer_calls = 0
+                self._targets_norm = targets_norm
+
+            def infer_fn(self, *, image, head_vector, face_origin_3d):
+                self.infer_calls += 1
+                # The point index is smuggled through head_vector so this
+                # fake can return that point's exact target -- proving the
+                # affine fit picks up re-inferred values, not the bogus
+                # norm_pog=(5, 5) stored on every sample below.
+                point_idx = int(np.asarray(head_vector)[0][0])
+                return np.array([self._targets_norm[point_idx]], dtype=np.float64)
+
+        tracker = _AdaptingTracker([])
+        calibration.start(tracker)
+        tracker._targets_norm = [
+            (tx / screen_w - 0.5, ty / screen_h - 0.5) for tx, ty in calibration.targets
+        ]
+
+        calibration._gaze_results = []
+        for point_idx, _ in enumerate(calibration.targets):
+            calibration._gaze_results.append(
+                [
+                    SimpleNamespace(
+                        norm_pog=np.array([5.0, 5.0]),
+                        eye_patch=np.zeros((8, 8, 3), dtype=np.uint8),
+                        head_vector=np.array([point_idx, 0, 0], dtype=np.float32),
+                        face_origin_3d=np.zeros(3, dtype=np.float32),
+                    )
+                    for _ in range(5)
+                ]
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            calibration.SAVE_DIR = Path(tmpdir)
+            calibration._fit()
+
+        self.assertTrue(tracker.adapt_called)
+        self.assertGreater(tracker.infer_calls, 0)
+        self.assertTrue(calibration.is_calibrated)
+        self.assertLess(done[0][1], 1e-6)
+        affine = np.array(calibration.correction_values["ninja_affine_matrix"], dtype=np.float64)
+        # Re-inferred points map exactly onto their targets, so the fitted
+        # affine should be close to identity, not skewed by norm_pog=(5, 5).
+        self.assertAlmostEqual(affine[0, 0], 1.0, places=3)
+        self.assertAlmostEqual(affine[1, 1], 1.0, places=3)
 
 
 if __name__ == "__main__":

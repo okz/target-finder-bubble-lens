@@ -48,13 +48,9 @@ _current_child_process: list = [None]
 def _handle_termination_signal(signum, frame):
     """Forward SIGTERM to the currently running task subprocess.
 
-    Without this, killing this orchestrator process (e.g. the control
-    panel's Stop button) leaves the synthetic-Fitts/realistic subprocess
-    running with no idea its parent is gone; that subprocess in turn has its
-    own preloaded technique subprocesses (bubble cursor, Ninja Cursors, ...)
-    detached into their own process groups, so the whole tree is orphaned.
-    Forwarding the signal lets the child's own termination handler tear its
-    own children down before this process exits.
+    Otherwise the task subprocess (and its own preloaded technique
+    subprocesses, detached into their own process groups) is orphaned when
+    this orchestrator gets killed (e.g. the control panel's Stop button).
     """
     proc = _current_child_process[0]
     if proc is not None and proc.poll() is None:
@@ -201,11 +197,8 @@ def task_description(task_name: str, *, language: str) -> str:
 def show_between_task_pause(args, screen, *, previous_task: str, next_task: str):
     """Show the pause screen on the given (already created) session screen.
 
-    The screen is kept alive (as a lowered fullscreen backdrop) instead of
-    being closed, so the desktop is never exposed between the moment the
-    participant clicks continue and the moment the next task's subprocess
-    window has actually appeared -- that subprocess needs a few seconds to
-    start Python, Qt, and (for Ninja Cursors) the eye-tracking stack.
+    Kept alive as a lowered fullscreen backdrop instead of closed, since the
+    next task's subprocess takes a few seconds to start its own window.
     """
     from PyQt6 import QtWidgets
 
@@ -242,23 +235,34 @@ def show_between_task_pause(args, screen, *, previous_task: str, next_task: str)
     return False
 
 
-def show_preparing_next_task_backdrop(args, screen, *, next_task: str):
-    """Keep a fullscreen black backdrop up while the next task subprocess starts."""
-    next_label = task_label(next_task, language=args.language)
+def show_session_intro_screen(args, screen, *, next_task: str):
+    """Introduce the first experiment before it starts, with a Continue button."""
     if is_english(args.language):
-        title = "Preparing next experiment..."
-        body = f"Starting: {next_label}."
+        title = "Welcome"
+        hint = "Click the button when you are ready to begin."
+        button_text = "Continue"
     else:
-        title = "Préparation de l’expérience suivante..."
-        body = f"Démarrage : {next_label}."
+        title = "Bienvenue"
+        hint = "Cliquez sur le bouton quand vous êtes prêt(e) à commencer."
+        button_text = "Continuer"
     screen.show_content(
         title=title,
-        body=body,
-        hint="",
-        button_text=None,
+        body=task_description(next_task, language=args.language),
+        hint=hint,
+        button_text=button_text,
         pending_feedback=False,
     )
-    screen.show_background_behind(clear_content=False)
+    aborted = screen.wait_for_continue()
+    if not aborted:
+        show_preparing_next_task_backdrop(args, screen, next_task=next_task)
+    return aborted
+
+
+def show_preparing_next_task_backdrop(args, screen, *, next_task: str):
+    """Keep a blank fullscreen black backdrop up while the next task
+    subprocess starts, so the desktop never flashes through. No text: the
+    next visible screen should be the subprocess's own first screen."""
+    screen.show_background_behind(clear_content=True)
 
 
 def show_task_error_screen(args, screen, *, task_name: str, returncode: int):
@@ -348,7 +352,7 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--cursor-log-hz", type=float, default=30.0)
     parser.add_argument("--windowed", action="store_true")
     parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--output-dir", default=None, help="Optional base directory containing control_comparative, control_our_task, and control_fitts_synthetic")
+    parser.add_argument("--output-dir", default=None, help="Optional base directory containing control_comparative_logs, control_realistic_logs, and control_fitts_synthetic_logs")
     parser.add_argument("--show-all-targets", action="store_true")
     parser.add_argument("--no-technique-log", action="store_true")
     parser.add_argument("--no-log", action="store_true", help="Do not keep the comparative top-level log; passed to synthetic session.")
@@ -359,26 +363,22 @@ def parse_args(argv: list[str] | None = None):
 
 
 def run(args) -> int:
-    # Without this, an unhandled exception in any Qt slot running in this
-    # process (session-screen timers, the global Escape listener, ...) makes
-    # PyQt6 call qFatal() and abort the whole process. Since this process
-    # holds the fullscreen backdrop between the two experiments, that abort
-    # is exactly what shows up as "jumps straight to the desktop" -- every
-    # other entry point in this project already installs this guard.
+    # Prevents an unhandled Qt-slot exception from aborting this process,
+    # which holds the fullscreen backdrop between the two experiments.
     install_qt_crash_guard()
     install_termination_signal_forwarding()
     order = comparative_task_order(args.participant, args.seed)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     session_id = f"{_safe_id(args.participant)}_{stamp}_comparative"
     output_base = Path(args.output_dir).expanduser() if args.output_dir else PROJECT_ROOT
-    comparative_root = output_base / "control_comparative" / session_id
-    our_task_root = output_base / "control_our_task" / session_id
-    synthetic_root = output_base / "control_fitts_synthetic" / session_id
+    comparative_root = output_base / "control_comparative_logs" / session_id
+    realistic_root = output_base / "control_realistic_logs" / session_id
+    synthetic_root = output_base / "control_fitts_synthetic_logs" / session_id
     log_file = comparative_root / f"{session_id}_comparative.jsonl"
 
     if not args.no_log and not args.summary_only:
         comparative_root.mkdir(parents=True, exist_ok=True)
-        our_task_root.mkdir(parents=True, exist_ok=True)
+        realistic_root.mkdir(parents=True, exist_ok=True)
         synthetic_root.mkdir(parents=True, exist_ok=True)
         write_event(
             log_file,
@@ -394,22 +394,17 @@ def run(args) -> int:
                 "fitts_trials_per_condition": args.fitts_trials_per_condition,
                 "synthetic_blocks": args.synthetic_blocks,
                 "conditions_file": str(args.conditions_file),
-                "comparative_log_group": "control_comparative",
-                "realistic_log_group": "control_our_task",
-                "synthetic_log_group": "control_fitts_synthetic",
+                "comparative_log_group": "control_comparative_logs",
+                "realistic_log_group": "control_realistic_logs",
+                "synthetic_log_group": "control_fitts_synthetic_logs",
                 "comparative_output_root": str(comparative_root),
-                "realistic_output_root": str(our_task_root),
+                "realistic_output_root": str(realistic_root),
                 "synthetic_output_root": str(synthetic_root),
             },
         )
 
-    # A single session screen stays alive (as a lowered fullscreen backdrop)
-    # for the whole comparative protocol. Each task subprocess needs a few
-    # seconds to start Python/Qt (and, for Ninja Cursors, the eye-tracking
-    # stack); without a backdrop covering that gap, the desktop is briefly
-    # exposed between the end of one task's window and the appearance of the
-    # next one's. Closing this screen only happens once, right before the
-    # process exits.
+    # Kept alive as a lowered fullscreen backdrop for the whole protocol so
+    # the desktop isn't exposed while each task subprocess starts up.
     from PyQt6 import QtWidgets
 
     session_screen = None if args.summary_only else create_session_screen(
@@ -430,13 +425,25 @@ def run(args) -> int:
     started = time.time()
     for task_index, task_name in enumerate(order, start=1):
         if task_name == "realistic":
-            task_output_dir = our_task_root / f"{task_index:02d}_{task_name}"
-            log_group = "control_our_task"
+            task_output_dir = realistic_root / f"{task_index:02d}_{task_name}"
+            log_group = "control_realistic_logs"
         else:
             task_output_dir = synthetic_root / f"{task_index:02d}_{task_name}"
-            log_group = "control_fitts_synthetic"
+            log_group = "control_fitts_synthetic_logs"
 
         task_args = argparse.Namespace(**vars(args))
+        # Only calibrate once, before the first task: each task is its own
+        # process with its own preloaded Ninja, and MAML adaptation compounds
+        # on repeated calibration (accumulates prior samples into the same
+        # model weights), degrading accuracy on every re-calibration instead
+        # of improving it. Later tasks reuse the affine matrix the first
+        # task's calibration already saved to disk.
+        if task_index > 1:
+            # Still wait for Ninja to finish warming up (it's a fresh process
+            # per task) even though we're skipping calibration -- just not
+            # the calibration flow itself.
+            task_args.ninja_wait_ready = bool(args.ninja_auto_calibrate)
+            task_args.ninja_auto_calibrate = False
         cmd = build_task_command(task_args, task_name, task_output_dir)
 
         if args.summary_only:
@@ -454,7 +461,19 @@ def run(args) -> int:
             continue
 
         if task_index == 1:
-            show_preparing_next_task_backdrop(args, session_screen, next_task=task_name)
+            if show_session_intro_screen(args, session_screen, next_task=task_name):
+                if not args.no_log:
+                    write_event(
+                        log_file,
+                        {
+                            "type": "comparative_session_end",
+                            "reason": "keyboard_escape_on_session_intro",
+                            "next_task": task_name,
+                            "total_duration_sec": round(time.time() - started, 3),
+                        },
+                    )
+                _close_session_screen()
+                return 130
 
         if not args.no_log:
             write_event(
@@ -505,11 +524,8 @@ def run(args) -> int:
                         "total_duration_sec": round(time.time() - started, 3),
                     },
                 )
-            # 130 means the participant deliberately pressed Escape inside
-            # the task -- that is an intentional exit, not an error, so just
-            # close quietly. Anything else (a crash, a missing dependency,
-            # calibration exhausting its retries, ...) is unexpected and
-            # should be shown, not silently dropped to the desktop.
+            # 130 = participant pressed Escape (intentional); anything else
+            # is unexpected and should be shown, not hidden.
             if returncode != 130 and session_screen is not None and not args.summary_only:
                 show_task_error_screen(args, session_screen, task_name=task_name, returncode=returncode)
             else:

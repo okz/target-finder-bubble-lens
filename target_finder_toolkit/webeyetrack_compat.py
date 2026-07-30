@@ -8,11 +8,9 @@ def patch_webeyetrack_dataclass_defaults() -> None:
 
     Some WebEyeTrack releases define dataclass fields with mutable defaults
     such as numpy.ndarray or nested WebEyeTrack config objects. Python 3.11+
-    rejects these during import on every platform (dataclasses now considers
-    unhashable defaults, including numpy arrays, invalid) -- this used to only
-    reproduce on Windows setups that happened to pin a newer Python, but it
-    reproduces identically on macOS/Linux with Python 3.11+. Patch dataclasses
-    only for WebEyeTrack-related mutable defaults before importing WebEyeTrack.
+    rejects these on every platform (dataclasses treats unhashable defaults,
+    including numpy arrays, as invalid). Patch dataclasses only for
+    WebEyeTrack-related mutable defaults before importing WebEyeTrack.
     """
     try:
         import dataclasses

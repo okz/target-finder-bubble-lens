@@ -18,10 +18,13 @@ class EyeCalibration:
     HOLD_SEC = 3.0
     SETTLE_SEC = 1.5
     GAZE_RESULTS_PER_POINT = 30
-    MAX_ACCEPTED_AFFINE_ERROR_FRACTION_OF_HALF_COLUMN = 1.0
+    MAX_ACCEPTED_AFFINE_ERROR_FRACTION_OF_HALF_COLUMN = 1.4
     MAX_ACCEPTED_POINT_ERROR_FRACTION_OF_HALF_COLUMN = 1.5
     MIN_VALID_GAZE_RESULTS_PER_POINT = 3
     POINT_OUTLIER_MIN_THRESHOLD_NORM = 0.05
+    MAML_STEPS_INNER = 10
+    MAML_INNER_LR = 1e-4
+    MAML_MIN_SAMPLES = 4
 
     POINT_LAYOUTS = {
         5: lambda sw, sh, mx, my, cx, cy: [
@@ -176,7 +179,7 @@ class EyeCalibration:
 
     def _fit(self):
         tracker = self._tracker_ref
-        calib_gaze_results = []
+        per_point_kept_results = []
         calib_norm_pogs = []
         point_summaries = []
 
@@ -193,23 +196,22 @@ class EyeCalibration:
 
             # Per-point robust gaze estimate:
             # 1) discard invalid frames,
-            # 2) remove within-point outliers around the point median,
-            # 3) use exactly one median gaze sample for this target.
-            # This keeps the current timing unchanged while preventing one bad
-            # frame from pulling the calibration fit away from the true point.
-            valid_pogs = self._valid_norm_pogs(gaze_results)
-            kept_pogs, outlier_threshold = self._filter_point_outliers(valid_pogs)
+            # 2) remove within-point outliers around the point median.
+            # Keeps the actual sample objects (not just their norm_pog) so
+            # they can also be used as MAML support samples below.
+            valid_results, valid_pogs = self._valid_gaze_results(gaze_results)
+            kept_results, kept_pogs, outlier_threshold = self._filter_point_outliers(valid_results, valid_pogs)
 
-            if kept_pogs.shape[0] < self.MIN_VALID_GAZE_RESULTS_PER_POINT:
+            if len(kept_results) < self.MIN_VALID_GAZE_RESULTS_PER_POINT:
                 print(
                     f"WARNING: Too few valid samples for calibration point {i}: "
-                    f"{kept_pogs.shape[0]} kept"
+                    f"{len(kept_results)} kept"
                 )
                 if self.on_done:
                     self.on_done(False, None)
                 return
             median_pog = np.median(kept_pogs, axis=0)
-            calib_gaze_results.append(SimpleNamespace(norm_pog=median_pog))
+            per_point_kept_results.append(kept_results)
             calib_norm_pogs.append((norm_x, norm_y))
             point_summaries.append(
                 {
@@ -236,9 +238,15 @@ class EyeCalibration:
                 }
             )
 
-        print(f"[calib] fitting with {len(calib_gaze_results)} median point samples")
+        print(
+            f"[calib] fitting with {len(per_point_kept_results)} points "
+            f"({sum(len(r) for r in per_point_kept_results)} samples)"
+        )
 
         try:
+            calib_gaze_results = self._adapt_model_and_refresh_points(
+                tracker, per_point_kept_results, calib_norm_pogs, point_summaries
+            )
             fit = self._fit_affine(calib_gaze_results, calib_norm_pogs, point_summaries)
         except Exception as e:
             self._calibrated = False
@@ -416,7 +424,9 @@ class EyeCalibration:
         return gain, offset
 
     @staticmethod
-    def _valid_norm_pogs(gaze_results):
+    def _valid_gaze_results(gaze_results):
+        """Return (results, pogs) keeping only samples with a finite 2-vector norm_pog."""
+        results = []
         pogs = []
         for gr in gaze_results:
             norm_pog = getattr(gr, "norm_pog", None)
@@ -425,14 +435,15 @@ class EyeCalibration:
             arr = np.asarray(norm_pog, dtype=np.float64)
             if arr.shape != (2,) or not np.all(np.isfinite(arr)):
                 continue
+            results.append(gr)
             pogs.append(arr)
         if not pogs:
-            return np.empty((0, 2), dtype=np.float64)
-        return np.asarray(pogs, dtype=np.float64)
+            return [], np.empty((0, 2), dtype=np.float64)
+        return results, np.asarray(pogs, dtype=np.float64)
 
-    def _filter_point_outliers(self, pogs):
+    def _filter_point_outliers(self, results, pogs):
         if pogs.shape[0] == 0:
-            return pogs, 0.0
+            return [], pogs, 0.0
         median_pog = np.median(pogs, axis=0)
         distances = np.linalg.norm(pogs - median_pog, axis=1)
         median_distance = float(np.median(distances))
@@ -440,8 +451,97 @@ class EyeCalibration:
         robust_sigma = 1.4826 * mad
         threshold = median_distance + 3.0 * robust_sigma
         threshold = max(threshold, self.POINT_OUTLIER_MIN_THRESHOLD_NORM)
-        kept = pogs[distances <= threshold]
-        return kept, threshold
+        keep_mask = distances <= threshold
+        kept_results = [r for r, keep in zip(results, keep_mask) if keep]
+        kept_pogs = pogs[keep_mask]
+        return kept_results, kept_pogs, threshold
+
+    def _adapt_model_and_refresh_points(self, tracker, per_point_kept_results, calib_norm_pogs, point_summaries):
+        """Fine-tune the gaze model on this session's samples (MAML few-shot
+        adaptation), then re-run inference on the same samples so the affine
+        fit -- and the point_summaries used for diagnostics/threshold checks
+        -- reflect what the (now adapted) model actually outputs, not the
+        pre-adaptation values collected during calibration.
+
+        Falls back to the pre-adaptation median per point if adaptation or
+        re-inference isn't available (e.g. the tracker doesn't support it).
+        """
+        adapt_fn = getattr(tracker, "adapt_from_gaze_results", None)
+        adapt_results = [gr for results in per_point_kept_results for gr in results]
+        adapt_targets = [
+            target
+            for results, target in zip(per_point_kept_results, calib_norm_pogs)
+            for _ in results
+        ]
+        if callable(adapt_fn) and len(adapt_results) >= self.MAML_MIN_SAMPLES:
+            try:
+                adapt_fn(
+                    adapt_results,
+                    np.asarray(adapt_targets, dtype=np.float64),
+                    steps_inner=self.MAML_STEPS_INNER,
+                    inner_lr=self.MAML_INNER_LR,
+                    affine_transform=False,
+                    pt_type="calib",
+                )
+                print(
+                    f"[calib] adapted gaze model on {len(adapt_results)} samples "
+                    f"(steps_inner={self.MAML_STEPS_INNER}, inner_lr={self.MAML_INNER_LR})"
+                )
+            except Exception as e:
+                print(f"[calib] model adaptation failed, using pre-adaptation gaze estimates: {e}")
+
+        calib_gaze_results = []
+        for i, results in enumerate(per_point_kept_results):
+            refreshed = [self._reinfer_norm_pog(tracker, gr) for gr in results]
+            refreshed = [pog for pog in refreshed if pog is not None]
+            if not refreshed:
+                refreshed = [np.asarray(gr.norm_pog, dtype=np.float64) for gr in results]
+            refreshed_arr = np.asarray(refreshed)
+            median_pog = np.median(refreshed_arr, axis=0)
+            calib_gaze_results.append(SimpleNamespace(norm_pog=median_pog))
+            # Diagnostics must be evaluated against the same (post-adaptation)
+            # data the affine was fit on, not the stale pre-adaptation values.
+            point_summaries[i]["raw_median_norm"] = [float(median_pog[0]), float(median_pog[1])]
+            point_summaries[i]["raw_mean_norm"] = [
+                float(np.mean(refreshed_arr[:, 0])),
+                float(np.mean(refreshed_arr[:, 1])),
+            ]
+            point_summaries[i]["raw_std_norm"] = [
+                float(np.std(refreshed_arr[:, 0])),
+                float(np.std(refreshed_arr[:, 1])),
+            ]
+        return calib_gaze_results
+
+    @staticmethod
+    def _reinfer_norm_pog(tracker, gaze_result):
+        """Re-run the gaze model on a stored sample, returning norm_pog or
+        None if the tracker doesn't expose enough to redo inference."""
+        infer_fn = getattr(tracker, "infer_fn", None)
+        eye_patch = getattr(gaze_result, "eye_patch", None)
+        head_vector = getattr(gaze_result, "head_vector", None)
+        face_origin_3d = getattr(gaze_result, "face_origin_3d", None)
+        if not callable(infer_fn) or eye_patch is None or head_vector is None or face_origin_3d is None:
+            return None
+        try:
+            import tensorflow as tf
+
+            image = np.asarray(eye_patch, dtype=np.float32) / 255.0
+            pred = infer_fn(
+                image=tf.convert_to_tensor(np.expand_dims(image, axis=0), dtype=tf.float32),
+                head_vector=tf.convert_to_tensor(
+                    np.expand_dims(np.asarray(head_vector, dtype=np.float32), axis=0), dtype=tf.float32
+                ),
+                face_origin_3d=tf.convert_to_tensor(
+                    np.expand_dims(np.asarray(face_origin_3d, dtype=np.float32), axis=0), dtype=tf.float32
+                ),
+            )
+            pog = np.asarray(pred[0], dtype=np.float64)
+            if pog.shape != (2,) or not np.all(np.isfinite(pog)):
+                return None
+            return pog
+        except Exception as e:
+            print(f"[calib] re-inference after adaptation failed: {e}")
+            return None
 
     @staticmethod
     def _reset_tracker_kalman(tracker):

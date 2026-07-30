@@ -47,11 +47,15 @@ except Exception:  # pragma: no cover - targetfinder deps may be unavailable.
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATA_DIR = Path("/Users/tangxinqi/Desktop/stage/data/web")
-DIFFICULTY_BINS = {
-    "easy": (0.0, 3.0),
-    "medium": (3.0, 5.0),
-    "hard": (5.0, 8.5),
-}
+# Kept in sync with fitts_distractors_task.py's SYNTHETIC_ID_VALUES/DENSITY_VALUES (that
+# module imports FROM this one, so these can't be imported the other way without a cycle)
+# so the realistic and synthetic Fitts tasks sample from the same (ID, density) condition
+# space, as required for their results to be comparable.
+ID_VALUES = (2.0, 3.5, 4.5, 6.0)
+RHO_VALUES = (0.1, 0.3, 0.6)
+ID_TOLERANCE = 0.5
+RHO_TOLERANCE = 0.1
+RHO_EQUIV_CACHE_FILENAME = ".rho_equiv_cache_v2.json"
 TECHNIQUES = [
     "mouse",
     "targetfinder",
@@ -108,6 +112,9 @@ class TargetAnnotation:
     distance: float
     width_metric: float
     fitts_id: float
+    global_density_r: float
+    local_density_r: float
+    rho_equiv: float
     source_line_number: int
     source_line: str
 
@@ -125,7 +132,8 @@ class DatasetImage:
 class TrialSpec:
     trial_id: int
     technique: str
-    difficulty: str
+    id_value: float
+    rho_value: float
     image_path: str
     label_path: str
     image_size: tuple[int, int]
@@ -138,6 +146,9 @@ class TrialSpec:
     distance: float
     width_metric: float
     fitts_id: float
+    global_density_r: float
+    local_density_r: float
+    rho_equiv: float
     source_line_number: int
     source_line: str
 
@@ -203,6 +214,93 @@ def compute_fitts_id(
     return center, distance, width_metric, fitts_id
 
 
+def _rect_union_area(
+    rects: list[tuple[float, float, float, float]],
+    region: tuple[float, float, float, float],
+) -> float:
+    """Exact area of the union of `rects` intersected with `region`, each as
+    (x, y, w, h). Coordinate-compression sweep -- fine for the modest
+    per-image annotation counts here (no need for a rasterized approximation)."""
+    rx, ry, rw, rh = region
+    if rw <= 0 or rh <= 0:
+        return 0.0
+    clipped = []
+    for bx, by, bw, bh in rects:
+        ix0 = max(rx, bx)
+        iy0 = max(ry, by)
+        ix1 = min(rx + rw, bx + bw)
+        iy1 = min(ry + rh, by + bh)
+        if ix1 > ix0 and iy1 > iy0:
+            clipped.append((ix0, iy0, ix1, iy1))
+    if not clipped:
+        return 0.0
+    xs = sorted({v for rect in clipped for v in (rect[0], rect[2])})
+    ys = sorted({v for rect in clipped for v in (rect[1], rect[3])})
+    area = 0.0
+    for xi in range(len(xs) - 1):
+        x0, x1 = xs[xi], xs[xi + 1]
+        cell_w = x1 - x0
+        if cell_w <= 0:
+            continue
+        cx = (x0 + x1) / 2.0
+        for yi in range(len(ys) - 1):
+            y0, y1 = ys[yi], ys[yi + 1]
+            cell_h = y1 - y0
+            if cell_h <= 0:
+                continue
+            cy = (y0 + y1) / 2.0
+            if any(rx0 <= cx < rx1 and ry0 <= cy < ry1 for rx0, ry0, rx1, ry1 in clipped):
+                area += cell_w * cell_h
+    return area
+
+
+def _compute_rho_equiv_values(
+    bboxes: list[tuple[float, float, float, float]],
+    image_width: int,
+    image_height: int,
+) -> list[tuple[float, float, float]]:
+    """Per-target density descriptors from the paper (section 3.5): R is the
+    global density (union of all annotated boxes / image area), r is the
+    local density in a 3W-by-3H neighborhood around each target, and
+    rho_equiv = (R + r) / 2. Returns (R, r, rho_equiv) per target so R and r
+    remain available individually, not just averaged together."""
+    image_area = float(image_width * image_height)
+    global_region = (0.0, 0.0, float(image_width), float(image_height))
+    R = _rect_union_area(bboxes, global_region) / image_area if image_area > 0 else 0.0
+    values = []
+    for bx, by, bw, bh in bboxes:
+        cx, cy = bx + bw / 2.0, by + bh / 2.0
+        nb_w, nb_h = 3.0 * bw, 3.0 * bh
+        region_area = nb_w * nb_h
+        if region_area > 0:
+            region = (cx - nb_w / 2.0, cy - nb_h / 2.0, nb_w, nb_h)
+            r = _rect_union_area(bboxes, region) / region_area
+        else:
+            r = 0.0
+        values.append((R, r, (R + r) / 2.0))
+    return values
+
+
+def _rho_equiv_cache_path(data_dir: Path) -> Path:
+    return data_dir / RHO_EQUIV_CACHE_FILENAME
+
+
+def _load_rho_equiv_cache(data_dir: Path) -> dict:
+    cache_path = _rho_equiv_cache_path(data_dir)
+    try:
+        return json.loads(cache_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_rho_equiv_cache(data_dir: Path, cache: dict):
+    cache_path = _rho_equiv_cache_path(data_dir)
+    try:
+        cache_path.write_text(json.dumps(cache), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def load_dataset(data_dir: Path, *, min_target_size: float = 4.0) -> list[DatasetImage]:
     data_dir = Path(data_dir).expanduser().resolve()
     if not data_dir.is_dir():
@@ -214,17 +312,56 @@ def load_dataset(data_dir: Path, *, min_target_size: float = 4.0) -> list[Datase
         for path in data_dir.glob(ext)
         if path.with_suffix(".txt").is_file()
     )
+    cache = _load_rho_equiv_cache(data_dir)
+    cache_dirty = False
     dataset: list[DatasetImage] = []
     for image_path in image_paths:
         label_path = image_path.with_suffix(".txt")
+        image_stat = image_path.stat()
+        label_stat = label_path.stat()
+        cache_key = image_path.name
+        cache_signature = [image_stat.st_mtime, image_stat.st_size, label_stat.st_mtime, label_stat.st_size]
+        cached_entry = cache.get(cache_key)
+        if cached_entry is not None and cached_entry.get("signature") == cache_signature:
+            image_width = cached_entry["width"]
+            image_height = cached_entry["height"]
+            targets = tuple(
+                TargetAnnotation(
+                    class_id=t["class_id"],
+                    class_name=t["class_name"],
+                    bbox=tuple(t["bbox"]),
+                    center=tuple(t["center"]),
+                    distance=t["distance"],
+                    width_metric=t["width_metric"],
+                    fitts_id=t["fitts_id"],
+                    global_density_r=t["global_density_r"],
+                    local_density_r=t["local_density_r"],
+                    rho_equiv=t["rho_equiv"],
+                    source_line_number=t["source_line_number"],
+                    source_line=t["source_line"],
+                )
+                for t in cached_entry["targets"]
+            )
+            if targets:
+                dataset.append(
+                    DatasetImage(
+                        image_path=image_path,
+                        label_path=label_path,
+                        width=image_width,
+                        height=image_height,
+                        targets=targets,
+                    )
+                )
+            continue
+
         image = QtGui.QImage(str(image_path))
         if image.isNull():
             continue
         image_width = image.width()
         image_height = image.height()
         start = (image_width / 2.0, image_height / 2.0)
-        targets: list[TargetAnnotation] = []
 
+        parsed = []
         for source_line_number, line in enumerate(
             label_path.read_text(encoding="utf-8", errors="replace").splitlines(),
             start=1,
@@ -243,6 +380,14 @@ def load_dataset(data_dir: Path, *, min_target_size: float = 4.0) -> list[Datase
             bbox = yolo_to_bbox(x_center, y_center, width, height, image_width, image_height)
             if bbox[2] < min_target_size or bbox[3] < min_target_size:
                 continue
+            parsed.append((class_id, bbox, source_line_number, line))
+
+        density_values = _compute_rho_equiv_values(
+            [entry[1] for entry in parsed], image_width, image_height
+        )
+
+        targets: list[TargetAnnotation] = []
+        for (class_id, bbox, source_line_number, line), (global_density_r, local_density_r, rho_equiv) in zip(parsed, density_values):
             center, distance, width_metric, fitts_id = compute_fitts_id(start, bbox)
             targets.append(
                 TargetAnnotation(
@@ -253,10 +398,21 @@ def load_dataset(data_dir: Path, *, min_target_size: float = 4.0) -> list[Datase
                     distance=distance,
                     width_metric=width_metric,
                     fitts_id=fitts_id,
+                    global_density_r=global_density_r,
+                    local_density_r=local_density_r,
+                    rho_equiv=rho_equiv,
                     source_line_number=source_line_number,
                     source_line=line,
                 )
             )
+
+        cache[cache_key] = {
+            "signature": cache_signature,
+            "width": image_width,
+            "height": image_height,
+            "targets": [asdict(t) for t in targets],
+        }
+        cache_dirty = True
 
         if targets:
             dataset.append(
@@ -269,9 +425,37 @@ def load_dataset(data_dir: Path, *, min_target_size: float = 4.0) -> list[Datase
                 )
             )
 
+    if cache_dirty:
+        _save_rho_equiv_cache(data_dir, cache)
+
     if not dataset:
         raise RuntimeError(f"No annotated images found in {data_dir}")
     return dataset
+
+
+def _nearest_within_tolerance(value: float, choices: tuple[float, ...], tolerance: float) -> float | None:
+    nearest = min(choices, key=lambda c: abs(c - value))
+    return nearest if abs(nearest - value) <= tolerance else None
+
+
+def _bucket_dataset_by_condition(
+    dataset: list[DatasetImage],
+) -> dict[tuple[float, float], list[tuple[DatasetImage, int, TargetAnnotation]]]:
+    """Assign each annotated target to at most one (id_value, rho_value) cell:
+    nearest ID_VALUES/RHO_VALUES entry, kept only if within tolerance of both."""
+    buckets: dict[tuple[float, float], list[tuple[DatasetImage, int, TargetAnnotation]]] = {
+        (idv, rv): [] for idv in ID_VALUES for rv in RHO_VALUES
+    }
+    for item in dataset:
+        for idx, target in enumerate(item.targets):
+            idv = _nearest_within_tolerance(target.fitts_id, ID_VALUES, ID_TOLERANCE)
+            if idv is None:
+                continue
+            rv = _nearest_within_tolerance(target.rho_equiv, RHO_VALUES, RHO_TOLERANCE)
+            if rv is None:
+                continue
+            buckets[(idv, rv)].append((item, idx, target))
+    return buckets
 
 
 def sample_trials(
@@ -279,34 +463,37 @@ def sample_trials(
     *,
     technique: str,
     count: int,
-    difficulty: str,
+    id_value: float | None,
+    rho_value: float | None,
     seed: int | None = None,
 ) -> list[TrialSpec]:
     rng = random.Random(seed)
-    candidates: list[tuple[str, DatasetImage, int, TargetAnnotation]] = []
-    difficulty_names = list(DIFFICULTY_BINS) if difficulty == "mixed" else [difficulty]
+    buckets = _bucket_dataset_by_condition(dataset)
 
-    for difficulty_name in difficulty_names:
-        low, high = DIFFICULTY_BINS[difficulty_name]
-        bucket = [
-            (difficulty_name, item, idx, target)
-            for item in dataset
-            for idx, target in enumerate(item.targets)
-            if low <= target.fitts_id < high
+    if id_value is None or rho_value is None:
+        candidates = [
+            (idv, rv, item, idx, target)
+            for (idv, rv), entries in buckets.items()
+            for item, idx, target in entries
         ]
-        candidates.extend(bucket)
+    else:
+        candidates = [
+            (id_value, rho_value, item, idx, target)
+            for item, idx, target in buckets.get((id_value, rho_value), [])
+        ]
 
     if not candidates:
-        raise RuntimeError(f"No targets found for difficulty={difficulty!r}")
+        raise RuntimeError(f"No targets found for id_value={id_value!r}, rho_value={rho_value!r}")
 
     trials: list[TrialSpec] = []
     for trial_id in range(1, count + 1):
-        difficulty_name, item, target_index, target = rng.choice(candidates)
+        idv, rv, item, target_index, target = rng.choice(candidates)
         trials.append(
             TrialSpec(
                 trial_id=trial_id,
                 technique=technique,
-                difficulty=difficulty_name,
+                id_value=idv,
+                rho_value=rv,
                 image_path=str(item.image_path),
                 label_path=str(item.label_path),
                 image_size=(item.width, item.height),
@@ -319,6 +506,9 @@ def sample_trials(
                 distance=target.distance,
                 width_metric=target.width_metric,
                 fitts_id=target.fitts_id,
+                global_density_r=target.global_density_r,
+                local_density_r=target.local_density_r,
+                rho_equiv=target.rho_equiv,
                 source_line_number=target.source_line_number,
                 source_line=target.source_line,
             )
@@ -330,17 +520,19 @@ def safe_log_name(value: str) -> str:
     return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value).strip("_")
 
 
-def default_log_path(*, technique: str, difficulty: str) -> Path:
-    logs_dir = PROJECT_ROOT / "patient_logs"
+def default_log_path(*, technique: str, id_value: float | None, rho_value: float | None) -> Path:
+    logs_dir = PROJECT_ROOT / "test_realistic_logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     technique_name = safe_log_name(technique)
-    difficulty_name = safe_log_name(difficulty)
-    return logs_dir / f"{stamp}_task_trials_{technique_name}_{difficulty_name}.jsonl"
+    condition_name = safe_log_name(
+        f"id{id_value}_rho{rho_value}" if id_value is not None and rho_value is not None else "mixed"
+    )
+    return logs_dir / f"{stamp}_task_trials_{technique_name}_{condition_name}.jsonl"
 
 
 def default_technique_log_path(technique: str) -> Path:
-    logs_dir = PROJECT_ROOT / "patient_logs"
+    logs_dir = PROJECT_ROOT / "test_realistic_logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return logs_dir / f"{stamp}_{safe_log_name(technique)}_during_task.jsonl"
@@ -433,6 +625,8 @@ def build_technique_command(
             cmd += ["--screen-height-cm", str(args.ninja_screen_height_cm)]
         if args.ninja_lock_on_dwell:
             cmd.append("--lock-on-dwell")
+        if getattr(args, "ninja_lock_on_key", False):
+            cmd.append("--lock-on-key")
         if args.ninja_hide_gaze_point:
             cmd.append("--hide-gaze-point")
         if getattr(args, "ninja_hide_debug_status", False):
@@ -956,6 +1150,7 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
         self._process_output_buffer = ""
         self._process_output_lines: list[str] = []
         self._waiting_for_ninja_calibration = False
+        self._waiting_for_ninja_fixation = False
         self._ninja_calibration_retries_left = NINJA_CALIBRATION_MAX_RETRIES
         self._pending_external_click_payload: dict | None = None
         self._exit_code = 0
@@ -998,6 +1193,10 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
         self.technique_watch_timer = QtCore.QTimer(self)
         self.technique_watch_timer.setInterval(100)
         self.technique_watch_timer.timeout.connect(self._check_technique_process)
+
+        self._ninja_fixation_poll_timer = QtCore.QTimer(self)
+        self._ninja_fixation_poll_timer.setInterval(30)
+        self._ninja_fixation_poll_timer.timeout.connect(self._check_ninja_fixation_gate)
 
         self.external_click_timer = QtCore.QTimer(self)
         self.external_click_timer.setSingleShot(True)
@@ -1251,9 +1450,12 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
             self._handle_technique_output_line(line)
             self._process_output_buffer = ""
         self._write_event({"type": "technique_process_exit", "exit_code": exit_code})
-        close_windows_process_job(self.technique_process)
-        self.technique_process = None
+        if self.technique_process is not None:
+            close_windows_process_job(self.technique_process)
+            self.technique_process = None
         self.technique_watch_timer.stop()
+        self._ninja_fixation_poll_timer.stop()
+        self._waiting_for_ninja_fixation = False
         self._set_status_text(
             f"{self._status_text()} | "
             f"{'Technique stopped' if is_english(self.language) else 'Technique arretee'} ({exit_code})"
@@ -1263,15 +1465,14 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
             self._write_event({"type": "ninja_calibration_blocked_experiment", "event": "process_exited"})
             self._abort_experiment("ninja_exited_during_calibration")
             return
-        # The technique subprocess died on its own outside the calibration
-        # wait (crashed, or the participant quit it directly -- e.g. Ninja
-        # Cursors' own "q" shortcut while its overlay has OS focus). Without
-        # this, the trial keeps running against a dead technique process
-        # (frozen/no-op cursor) instead of ending the experiment.
+        # Technique process died outside the calibration wait; end the
+        # experiment instead of continuing against a dead technique.
         if not self._session_ended and not self._aborting:
             self._abort_experiment("technique_exited_unexpectedly")
 
     def _stop_technique_process(self, *, wait: bool = True):
+        self._ninja_fixation_poll_timer.stop()
+        self._waiting_for_ninja_fixation = False
         if self.technique_process is None:
             self.technique_watch_timer.stop()
             restore_default_cursors()
@@ -1376,6 +1577,43 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
 
     def _ninja_calibrate_state(self) -> str:
         return self._ninja_state_at_start("calibrate")
+
+    def _ninja_fixation_state(self) -> str:
+        return self._ninja_state_at_start("fixate")
+
+    def _ninja_fixation_status_path(self) -> Path | None:
+        if self.ninja_control_file is None:
+            return None
+        return Path(str(self.ninja_control_file) + ".fixation")
+
+    def _start_ninja_fixation_wait(self):
+        status_path = self._ninja_fixation_status_path()
+        if status_path is not None:
+            status_path.unlink(missing_ok=True)
+        self._waiting_for_ninja_fixation = True
+        self._set_ninja_control_state(self._ninja_fixation_state())
+        self._set_message_text(
+            "Look at the center of the screen..." if is_english(self.language) else "Regardez le centre de l'écran...",
+            style="center",
+        )
+        self._ninja_fixation_poll_timer.start()
+
+    def _check_ninja_fixation_gate(self):
+        if not self._waiting_for_ninja_fixation:
+            self._ninja_fixation_poll_timer.stop()
+            return
+        status_path = self._ninja_fixation_status_path()
+        try:
+            status = status_path.read_text(encoding="utf-8").strip() if status_path else ""
+        except OSError:
+            status = ""
+        if status not in {"achieved", "timeout"}:
+            return
+        self._ninja_fixation_poll_timer.stop()
+        self._waiting_for_ninja_fixation = False
+        self._write_event({"type": "ninja_fixation_gate_event", "event": status})
+        self._set_ninja_control_state(self._ninja_active_state())
+        self._finish_begin_click_phase()
 
     def _retry_ninja_calibration(self):
         if self.technique_process is None or self.technique_process.poll() is not None:
@@ -1560,21 +1798,19 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
         block_index = self.session_metadata.get("block_index")
         block_count = self.session_metadata.get("block_count")
         if block_index is not None and block_count is not None:
-            block_prefix = (
-                f"Block {block_index}/{block_count}"
-                if is_english(self.language)
-                else f"Bloc {block_index}/{block_count}"
-            )
+            condition_prefix = f"Condition {block_index}/{block_count}"
         else:
-            block_prefix = "Block" if is_english(self.language) else "Bloc"
+            condition_prefix = "Condition"
         trial_label = "Trial" if is_english(self.language) else "Essai"
-        difficulty_label = "Difficulty" if is_english(self.language) else "Difficulte"
+        misses_label = "misses" if is_english(self.language) else "erreurs"
         target_label = "Target" if is_english(self.language) else "Cible"
         self._set_status_text(
-            f"{block_prefix} | {trial_label} {self.current_trial.trial_id}/{len(self.trials)} | "
             f"Technique: {self.current_trial.technique} | "
-            f"{difficulty_label}: {self.current_trial.difficulty} | "
-            f"ID={self.current_trial.fitts_id:.2f} | "
+            f"{condition_prefix} | "
+            f"{trial_label} {self.current_trial.trial_id}/{len(self.trials)} | "
+            f"{misses_label}={self.miss_count} | "
+            f"ID={self.current_trial.fitts_id:.2f} (target {self.current_trial.id_value:g}) | "
+            f"rho={self.current_trial.rho_equiv:.2f} (target {self.current_trial.rho_value:g}) | "
             f"{target_label}: {self.current_trial.target_class_name}"
         )
         self._write_event(
@@ -1604,7 +1840,7 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
         self._set_ninja_control_state(self._ninja_pretrial_state())
         self._start_cursor_lock_if_needed()
         self._set_message_text(f"Image {self.current_index + 1}", style="center")
-        QtCore.QTimer.singleShot(800, self._start_countdown)
+        QtCore.QTimer.singleShot(300, self._start_countdown)
 
     def _start_countdown(self):
         self._accept_clicks = False
@@ -1616,7 +1852,7 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
         self.canvas.start_attention_cue(duration=1.0)
         if self._countdown_remaining <= 0:
             self._set_message_text("")
-            QtCore.QTimer.singleShot(1000, self._begin_click_phase)
+            QtCore.QTimer.singleShot(300, self._begin_click_phase)
             return
         self._set_message_text(format_countdown_seconds(self._countdown_remaining), style="center")
         self.timer.start()
@@ -1633,9 +1869,18 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
     def _begin_click_phase(self):
         self._unlock_pretrial_cursor()
         self._pretrial_cursor_lock_active = False
-        self._set_ninja_control_state(self._ninja_active_state())
-        self._write_annotation_control_state("active")
         self.canvas.clear_attention_cue()
+        if self._uses_ninja_cursors():
+            # Fixation gate: gaze often anticipates the (predictable) target
+            # during the attention cue, so require a real fixation at the
+            # start point -- after the cue clears -- before going active.
+            self._start_ninja_fixation_wait()
+            return
+        self._set_ninja_control_state(self._ninja_active_state())
+        self._finish_begin_click_phase()
+
+    def _finish_begin_click_phase(self):
+        self._write_annotation_control_state("active")
         self._set_message_text("")
         self._accept_clicks = True
         self.trial_started_at = time.monotonic()
@@ -1654,7 +1899,8 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
             "global_trial_id": self._global_trial_id(),
             **self.session_metadata,
             "technique": self.current_trial.technique,
-            "difficulty": self.current_trial.difficulty,
+            "id_value": self.current_trial.id_value,
+            "rho_value": self.current_trial.rho_value,
             "screen_position": [round(float(global_pos.x()), 3), round(float(global_pos.y()), 3)],
             "widget_position": [round(float(widget_pos.x()), 3), round(float(widget_pos.y()), 3)],
             "inside_image": image_point is not None,
@@ -1711,13 +1957,17 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
                 "global_trial_id": self._global_trial_id(),
                 **self.session_metadata,
                 "technique": self.current_trial.technique,
-                "difficulty": self.current_trial.difficulty,
+                "id_value": self.current_trial.id_value,
+                "rho_value": self.current_trial.rho_value,
                 "movement_time_ms": round(elapsed_ms, 3),
                 "inside_target": bool(inside_target),
                 "target_bbox": list(self.current_trial.target_bbox),
                 "target_class_id": self.current_trial.target_class_id,
                 "target_class_name": self.current_trial.target_class_name,
                 "fitts_id": round(self.current_trial.fitts_id, 4),
+                "global_density_r": round(self.current_trial.global_density_r, 4),
+                "local_density_r": round(self.current_trial.local_density_r, 4),
+                "rho_equiv": round(self.current_trial.rho_equiv, 4),
                 **{
                     key: value
                     for key, value in mouse_payload.items()
@@ -1788,7 +2038,7 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
                 self._set_message_text("Success" if success else "Failure", style="center")
             else:
                 self._set_message_text("Reussi" if success else "Echec", style="center")
-            QtCore.QTimer.singleShot(700, self.next_trial)
+            QtCore.QTimer.singleShot(200, self.next_trial)
         else:
             self._set_message_text("Miss - try again" if is_english(self.language) else "Echec - recommencez", style="center")
 
@@ -1824,11 +2074,14 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
 def print_dataset_summary(dataset: list[DatasetImage]):
     all_targets = [target for item in dataset for target in item.targets]
     ids = [target.fitts_id for target in all_targets]
+    rhos = [target.rho_equiv for target in all_targets]
     print(f"images={len(dataset)} targets={len(all_targets)}")
     print(f"fitts_id min={min(ids):.2f} median={sorted(ids)[len(ids)//2]:.2f} max={max(ids):.2f}")
-    for name, (low, high) in DIFFICULTY_BINS.items():
-        count = sum(1 for value in ids if low <= value < high)
-        print(f"{name}: {count} targets in [{low}, {high})")
+    print(f"rho_equiv min={min(rhos):.3f} median={sorted(rhos)[len(rhos)//2]:.3f} max={max(rhos):.3f}")
+    buckets = _bucket_dataset_by_condition(dataset)
+    for idv in ID_VALUES:
+        for rv in RHO_VALUES:
+            print(f"id={idv:g} rho={rv:g}: {len(buckets[(idv, rv)])} targets")
 
 
 def main():
@@ -1837,7 +2090,8 @@ def main():
     parser.add_argument("--technique", choices=TECHNIQUES, default="mouse", help="Technique label to store in experience logs")
     parser.add_argument("--language", choices=["French", "English"], default="French", help="UI language for experimental screens")
     parser.add_argument("--trials", "--trial", dest="trials", type=int, default=12, help="Number of trials to generate")
-    parser.add_argument("--difficulty", choices=["easy", "medium", "hard", "mixed"], default="mixed", help="Target difficulty bin")
+    parser.add_argument("--id-value", choices=["2.0", "3.5", "4.5", "6.0", "mixed"], default="mixed", help="Target Fitts ID condition")
+    parser.add_argument("--rho-value", choices=["0.1", "0.3", "0.6", "mixed"], default="mixed", help="Target density (rho) condition")
     parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducible trial sampling")
     parser.add_argument("--countdown", type=float, default=0.0, help="Countdown seconds before each trial starts")
     parser.add_argument("--max-clicks", type=int, default=1, help="Maximum clicks allowed per trial")
@@ -1885,6 +2139,7 @@ def main():
     parser.add_argument("--ninja-gaze-offset-y", type=float, default=DEFAULT_NINJA_GAZE_OFFSET_Y, help="Ninja gaze vertical offset")
     parser.add_argument("--ninja-selection-hold", type=float, default=DEFAULT_NINJA_SELECTION_HOLD, help="Ninja dwell duration before lock")
     parser.add_argument("--ninja-lock-on-dwell", action="store_true", help="Require Ninja dwell lock before click")
+    parser.add_argument("--ninja-lock-on-key", action="store_true", help="Require pressing space to lock the Ninja candidate cursor before click")
     parser.add_argument("--ninja-hide-gaze-point", action="store_true", help="Hide Ninja red gaze point")
     parser.add_argument("--ninja-hide-debug-status", action="store_true", help="Hide Ninja gaze tracking status overlay")
     parser.add_argument("--ninja-snap-system-cursor-to-active", action="store_true", help="Move the native cursor to the active Ninja cursor")
@@ -1894,13 +2149,16 @@ def main():
     parser.add_argument("--ninja-with-targetfinder", dest="ninja_without_targetfinder", action="store_false", help="Enable TargetFinder detections inside Ninja Cursors")
     parser.set_defaults(ninja_without_targetfinder=True)
     args = parser.parse_args()
+    args.id_value = None if args.id_value == "mixed" else float(args.id_value)
+    args.rho_value = None if args.rho_value == "mixed" else float(args.rho_value)
 
     dataset = load_dataset(Path(args.data_dir))
     trials = sample_trials(
         dataset,
         technique=args.technique,
         count=args.trials,
-        difficulty=args.difficulty,
+        id_value=args.id_value,
+        rho_value=args.rho_value,
         seed=args.seed,
     )
 
@@ -1908,8 +2166,8 @@ def main():
     print("sample_trials:")
     for trial in trials[: min(5, len(trials))]:
         print(
-            f"  trial={trial.trial_id} difficulty={trial.difficulty} "
-            f"ID={trial.fitts_id:.2f} image={Path(trial.image_path).name} "
+            f"  trial={trial.trial_id} id={trial.id_value:g} rho={trial.rho_value:g} "
+            f"ID={trial.fitts_id:.2f} rho_equiv={trial.rho_equiv:.3f} image={Path(trial.image_path).name} "
             f"target_index={trial.target_index} "
             f"source_line_number={trial.source_line_number} "
             f"source_line={trial.source_line!r} "
@@ -1925,7 +2183,7 @@ def main():
     log_file = (
         Path(args.log_file).expanduser()
         if args.log_file
-        else default_log_path(technique=args.technique, difficulty=args.difficulty)
+        else default_log_path(technique=args.technique, id_value=args.id_value, rho_value=args.rho_value)
     )
     launch_technique = (
         args.technique != "mouse"

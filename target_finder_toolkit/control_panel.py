@@ -98,6 +98,7 @@ DEFAULT_RAKE_GAZE_OFFSET_X = -40.0
 DEFAULT_RAKE_GAZE_OFFSET_Y = -50.0
 DEFAULT_RAKE_SELECTION_HOLD = 2.0
 DEFAULT_RAKE_LOCK_ON_DWELL = False
+DEFAULT_RAKE_LOCK_ON_KEY = False
 DEFAULT_RAKE_USE_CALIBRATION = True
 DEFAULT_RAKE_CALIB_POINTS = 13
 DEFAULT_RAKE_AUTO_CALIBRATE = False
@@ -109,11 +110,12 @@ DEFAULT_EXPERIMENT_DATA_DIR = str(Path(__file__).resolve().parents[3] / "data" /
 DEFAULT_EXPERIMENT_TASK_TYPE = "realistic"
 DEFAULT_SYNTHETIC_DENSITY = "medium"
 DEFAULT_SYNTHETIC_BLOCKS = 60
-DEFAULT_REALISTIC_EXPERIMENT_TRIALS = 9
-DEFAULT_FITTS_EXPERIMENT_TRIALS = 9
+DEFAULT_REALISTIC_EXPERIMENT_TRIALS = 7
+DEFAULT_FITTS_EXPERIMENT_TRIALS = 7
 # Kept as a compatibility alias for older configuration files.
 DEFAULT_EXPERIMENT_TRIALS = DEFAULT_REALISTIC_EXPERIMENT_TRIALS
-DEFAULT_EXPERIMENT_DIFFICULTY = "mixed"
+DEFAULT_EXPERIMENT_ID_VALUE = "mixed"
+DEFAULT_EXPERIMENT_RHO_VALUE = "mixed"
 DEFAULT_EXPERIMENT_COUNTDOWN = 0.0
 DEFAULT_EXPERIMENT_MAX_CLICKS = 1
 DEFAULT_EXPERIMENT_FULLSCREEN = True
@@ -121,9 +123,15 @@ DEFAULT_EXPERIMENT_SHOW_ALL_TARGETS = False
 DEFAULT_EXPERIMENT_SESSION_ENABLED = False
 DEFAULT_EXPERIMENT_PARTICIPANT_ID = "P01"
 DEFAULT_BASELINE_TRIALS_PER_TASK = 5
-DEFAULT_COMPARATIVE_TASK_PART = "control_our_task"
+DEFAULT_COMPARATIVE_TASK_PART = "realistic"
 DEFAULT_COMPARATIVE_RUN_MODE = "test"
-EXPERIMENT_LOG_ROOTS = ("control_comparative", "control_our_task", "control_fitts_synthetic")
+EXPERIMENT_LOG_ROOTS = (
+    "control_comparative_logs",
+    "control_realistic_logs",
+    "control_fitts_synthetic_logs",
+    "test_realistic_logs",
+    "test_fitts_synthetic_logs",
+)
 DEFAULT_USAGE_MODE = "test"
 PAGE_USAGE = 0
 PAGE_EXPERIMENT_PROTOCOL = 1
@@ -255,6 +263,8 @@ UI_TEXTS = {
         "rake_gaze_offset_y_desc": "Shifts the gaze estimate vertically before selecting the active cursor. Positive = move down, negative = move up.",
         "rake_lock_on_dwell": "Lock cursor by gaze dwell (range: off/on, default: off)",
         "rake_lock_on_dwell_desc": "When enabled, gaze must stay on the same cursor before it locks. When disabled, the current orange cursor can be clicked immediately.",
+        "rake_lock_on_key": "Lock cursor with spacebar (range: off/on, default: off)",
+        "rake_lock_on_key_desc": "When enabled, press spacebar to lock the current orange cursor (it turns green) before clicking it. An alternative to gaze-dwell locking that avoids relying on gaze stability.",
         "rake_selection_hold": "Gaze dwell lock time (range: 0.0-5.0, default: 2.0)",
         "rake_selection_hold_desc": "Seconds the gaze must stay on the same cursor before it locks automatically. Used only when dwell locking is enabled.",
         "rake_show_gaze": "Show gaze point (Ninja only, range: off/on, default: off)",
@@ -284,17 +294,17 @@ UI_TEXTS = {
         "experiment_task_type": "Experimental task type (default: realistic screenshots)",
         "experiment_task_type_desc": "Choose realistic screenshots, synthetic Fitts-with-distractors, or the healthy-participant comparative protocol that runs both tasks.",
         "experiment_session_enabled": "Run full experimental session (range: off/on, default: off)",
-        "experiment_session_enabled_desc": "If enabled, Start / Apply runs the full task blocks: Standard Mouse, Bubble, DynaSpot, Semantic Pointing, and Ninja Cursors over easy/medium/hard difficulties.",
+        "experiment_session_enabled_desc": "If enabled, Start / Apply runs the full task blocks: Standard Mouse, Bubble, DynaSpot, Semantic Pointing, and Ninja Cursors over all 12 ID × rho conditions.",
         "experiment_participant_id": "Participant ID (default: P01)",
         "experiment_participant_id_desc": "Identifier written in the session log and used to select one Balanced Latin Square block order.",
         "experiment_data_dir": "Dataset folder (default: stage/data/web)",
         "experiment_data_dir_desc": "Folder containing the annotated screenshot .png/.txt pairs used to generate trials.",
-        "experiment_realistic_trials": "Realistic task: trials per block (range: 1-1000, default: 9)",
-        "experiment_realistic_trials_desc": "Number of trials in each technique × difficulty block of the realistic annotated-screenshot task.",
-        "experiment_fitts_trials": "Synthetic Fitts task: trials per condition (range: 1-1000, default: 9)",
-        "experiment_fitts_trials_desc": "Number of repetitions for each technique × ID × distractor-density condition in the synthetic Fitts task.",
-        "experiment_difficulty": "Difficulty (choices: easy/medium/hard/mixed, default: mixed)",
-        "experiment_difficulty_desc": "Difficulty bin sampled by Fitts ID: easy [0,3), medium [3,5), hard [5,8.5). Mixed samples from all bins.",
+        "experiment_realistic_trials": "Trials per condition (range: 1-1000, default: 7)",
+        "experiment_realistic_trials_desc": "Shared by both tasks: repetitions for each technique × ID × rho condition, realistic (annotated screenshots) and synthetic Fitts alike.",
+        "experiment_id_value": "Fitts ID (choices: 2.0/3.5/4.5/6.0/mixed, default: mixed)",
+        "experiment_id_value_desc": "Target Fitts ID condition, matched within ±0.5 against each annotated target's ID. Mixed samples from all four.",
+        "experiment_rho_value": "Density rho (choices: 0.1/0.3/0.6/mixed, default: mixed) -- realistic task only",
+        "experiment_rho_value_desc": "Target density condition, matched within ±0.1 against each annotated target's rho_equiv=(R+r)/2. Mixed samples from all three.",
         "synthetic_density": "Synthetic distractor density (choices: low/medium/high, default: medium)",
         "synthetic_density_desc": "Distractor density rho for the synthetic Fitts task: low = 0.1, medium = 0.3, high = 0.6.",
         "synthetic_blocks": "Fitts synthetic only: conditions per participant (range: 1-60, default: 60)",
@@ -484,6 +494,8 @@ UI_TEXTS = {
         "rake_gaze_offset_y_desc": "Décale l’estimation du regard verticalement avant de choisir le curseur actif. Positif = vers le bas, négatif = vers le haut.",
         "rake_lock_on_dwell": "Verrouiller par fixation du regard (plage : off/on, défaut : off)",
         "rake_lock_on_dwell_desc": "Si activé, le regard doit rester sur le même curseur avant verrouillage. Sinon, le curseur orange courant peut être cliqué immédiatement.",
+        "rake_lock_on_key": "Verrouiller avec la barre d’espace (plage : off/on, défaut : off)",
+        "rake_lock_on_key_desc": "Si activé, appuyez sur la barre d’espace pour verrouiller le curseur orange courant (il devient vert) avant de cliquer dessus. Une alternative au verrouillage par fixation du regard qui ne dépend pas de la stabilité du regard.",
         "rake_selection_hold": "Temps de verrouillage par fixation du regard (plage : 0.0-5.0, défaut : 2.0)",
         "rake_selection_hold_desc": "Durée pendant laquelle le regard doit rester sur le même curseur avant qu’il se verrouille automatiquement. Utilisé seulement si le verrouillage est activé.",
         "rake_show_gaze": "Afficher le point de regard (Ninja uniquement, plage : off/on, défaut : off)",
@@ -513,17 +525,17 @@ UI_TEXTS = {
         "experiment_task_type": "Type de tâche expérimentale (défaut : captures réalistes)",
         "experiment_task_type_desc": "Choisir les captures réalistes, la tâche synthétique de Fitts avec distracteurs, ou le protocole comparatif pour participants sans troubles moteurs qui lance les deux tâches.",
         "experiment_session_enabled": "Lancer une session expérimentale complète (plage : off/on, défaut : off)",
-        "experiment_session_enabled_desc": "Si activé, Démarrer / Appliquer lance automatiquement les blocs de la tâche complète : souris standard, Bubble, DynaSpot, Pointage sémantique et Ninja Cursors en easy/medium/hard.",
+        "experiment_session_enabled_desc": "Si activé, Démarrer / Appliquer lance automatiquement les blocs de la tâche complète : souris standard, Bubble, DynaSpot, Pointage sémantique et Ninja Cursors sur les 12 conditions ID × rho.",
         "experiment_participant_id": "Identifiant participant (défaut : P01)",
         "experiment_participant_id_desc": "Identifiant enregistré dans le journal de session et utilisé pour sélectionner un ordre de blocs dans le carré latin équilibré.",
         "experiment_data_dir": "Dossier du jeu de données (défaut : stage/data/web)",
         "experiment_data_dir_desc": "Dossier contenant les paires annotées .png/.txt utilisées pour générer les essais.",
-        "experiment_realistic_trials": "Tâche réaliste : essais par bloc (plage : 1-1000, défaut : 9)",
-        "experiment_realistic_trials_desc": "Nombre d’essais dans chaque bloc technique × difficulté de la tâche réaliste sur captures annotées.",
-        "experiment_fitts_trials": "Tâche Fitts synthétique : essais par condition (plage : 1-1000, défaut : 9)",
-        "experiment_fitts_trials_desc": "Nombre de répétitions pour chaque condition technique × ID × densité de distracteurs de la tâche Fitts synthétique.",
-        "experiment_difficulty": "Difficulté (choix : easy/medium/hard/mixed, défaut : mixed)",
-        "experiment_difficulty_desc": "Niveau échantillonné selon l’ID de Fitts : easy [0,3), medium [3,5), hard [5,8.5). Mixed échantillonne tous les niveaux.",
+        "experiment_realistic_trials": "Essais par condition (plage : 1-1000, défaut : 7)",
+        "experiment_realistic_trials_desc": "Partagé par les deux tâches : répétitions pour chaque condition technique × ID × rho, réaliste (captures annotées) comme Fitts synthétique.",
+        "experiment_id_value": "ID de Fitts (choix : 2.0/3.5/4.5/6.0/mixed, défaut : mixed)",
+        "experiment_id_value_desc": "Condition d’ID de Fitts visée, appariée à ±0.5 avec l’ID de chaque cible annotée. Mixed échantillonne les quatre valeurs.",
+        "experiment_rho_value": "Densité rho (choix : 0.1/0.3/0.6/mixed, défaut : mixed) -- tâche réaliste uniquement",
+        "experiment_rho_value_desc": "Condition de densité visée, appariée à ±0.1 avec le rho_equiv=(R+r)/2 de chaque cible annotée. Mixed échantillonne les trois valeurs.",
         "synthetic_density": "Densité des distracteurs synthétiques (choix : low/medium/high, défaut : medium)",
         "synthetic_density_desc": "Densité rho des distracteurs pour la tâche synthétique de Fitts : low = 0.1, medium = 0.3, high = 0.6.",
         "synthetic_blocks": "Fitts synthétique uniquement : conditions par participant (plage : 1-60, défaut : 60)",
@@ -631,6 +643,8 @@ class PanelConfig:
     rake_gaze_offset_y: float = DEFAULT_RAKE_GAZE_OFFSET_Y
     rake_selection_hold: float = DEFAULT_RAKE_SELECTION_HOLD
     rake_lock_on_dwell: bool = DEFAULT_RAKE_LOCK_ON_DWELL
+    rake_lock_on_key: bool = DEFAULT_RAKE_LOCK_ON_KEY
+    rake_lock_on_key_comparative: bool = DEFAULT_RAKE_LOCK_ON_KEY
     rake_show_gaze: bool = DEFAULT_RAKE_SHOW_GAZE
     rake_show_debug_status: bool = DEFAULT_RAKE_SHOW_DEBUG_STATUS
     rake_snap_system_cursor: bool = DEFAULT_RAKE_SNAP_SYSTEM_CURSOR
@@ -647,7 +661,8 @@ class PanelConfig:
     experiment_trials: int = DEFAULT_EXPERIMENT_TRIALS
     realistic_trials: int = DEFAULT_REALISTIC_EXPERIMENT_TRIALS
     fitts_trials: int = DEFAULT_FITTS_EXPERIMENT_TRIALS
-    experiment_difficulty: str = DEFAULT_EXPERIMENT_DIFFICULTY
+    experiment_id_value: str = DEFAULT_EXPERIMENT_ID_VALUE
+    experiment_rho_value: str = DEFAULT_EXPERIMENT_RHO_VALUE
     synthetic_density: str = DEFAULT_SYNTHETIC_DENSITY
     synthetic_blocks: int = DEFAULT_SYNTHETIC_BLOCKS
     experiment_countdown: float = DEFAULT_EXPERIMENT_COUNTDOWN
@@ -1237,28 +1252,28 @@ class ControlPanel(QtWidgets.QWidget):
         card, card_layout = self._create_card()
         card_layout.addWidget(self._create_note("usage_section"))
 
+        card_layout.addWidget(self._create_note("usage_test_desc"))
         self.usage_test_button = QtWidgets.QPushButton()
         self.usage_test_button.setObjectName("ActionButton")
         self.usage_test_button.setCheckable(True)
         self._bind_text(self.usage_test_button, "usage_test")
         card_layout.addWidget(self.usage_test_button)
-        card_layout.addWidget(self._create_note("usage_test_desc"))
         card_layout.addWidget(self._create_separator())
 
+        card_layout.addWidget(self._create_note("usage_baseline_desc"))
         self.usage_baseline_button = QtWidgets.QPushButton()
         self.usage_baseline_button.setObjectName("ActionButton")
         self.usage_baseline_button.setCheckable(True)
         self._bind_text(self.usage_baseline_button, "usage_baseline")
         card_layout.addWidget(self.usage_baseline_button)
-        card_layout.addWidget(self._create_note("usage_baseline_desc"))
         card_layout.addWidget(self._create_separator())
 
+        card_layout.addWidget(self._create_note("usage_experiment_desc"))
         self.usage_experiment_button = QtWidgets.QPushButton()
         self.usage_experiment_button.setObjectName("ActionButton")
         self.usage_experiment_button.setCheckable(True)
         self._bind_text(self.usage_experiment_button, "usage_experiment")
         card_layout.addWidget(self.usage_experiment_button)
-        card_layout.addWidget(self._create_note("usage_experiment_desc"))
 
         page_layout.addWidget(card)
         page_layout.addStretch()
@@ -1501,6 +1516,7 @@ class ControlPanel(QtWidgets.QWidget):
         self.disable_accel_cb = self._create_switch()
         self.log_data_cb = self._create_switch()
         self.rake_lock_on_dwell_cb = self._create_switch()
+        self.rake_lock_on_key_cb = self._create_switch()
         self.rake_show_gaze_cb = self._create_switch()
         self.rake_show_debug_status_cb = self._create_switch()
         self.rake_snap_system_cursor_cb = self._create_switch()
@@ -1555,23 +1571,26 @@ class ControlPanel(QtWidgets.QWidget):
 
         self.comparative_task_part_combo = QtWidgets.QComboBox()
         self.comparative_task_part_combo.setObjectName("TaskDropdown")
-        self.comparative_task_part_combo.addItem("realistic", "control_our_task")
-        self.comparative_task_part_combo.addItem("synthetic_fitts", "control_fitts_synthetic")
+        self.comparative_task_part_combo.addItem("realistic", "realistic")
+        self.comparative_task_part_combo.addItem("synthetic_fitts", "synthetic_fitts")
         self._set_combo_data(self.comparative_task_part_combo, DEFAULT_COMPARATIVE_TASK_PART)
 
+        # One shared spinbox: both the realistic and synthetic Fitts tasks use
+        # the same trials-per-(technique × ID × rho)-condition count.
         self.experiment_trials_spin = QtWidgets.QSpinBox()
         self.experiment_trials_spin.setKeyboardTracking(False)
         self.experiment_trials_spin.setRange(1, 1000)
         self.experiment_trials_spin.setValue(DEFAULT_REALISTIC_EXPERIMENT_TRIALS)
         self.realistic_trials_spin = self.experiment_trials_spin
-        self.fitts_trials_spin = QtWidgets.QSpinBox()
-        self.fitts_trials_spin.setKeyboardTracking(False)
-        self.fitts_trials_spin.setRange(1, 1000)
-        self.fitts_trials_spin.setValue(DEFAULT_FITTS_EXPERIMENT_TRIALS)
+        self.fitts_trials_spin = self.experiment_trials_spin
 
-        self.experiment_difficulty_combo = QtWidgets.QComboBox()
-        self.experiment_difficulty_combo.addItems(["mixed", "easy", "medium", "hard"])
-        self.experiment_difficulty_combo.setCurrentText(DEFAULT_EXPERIMENT_DIFFICULTY)
+        self.experiment_id_combo = QtWidgets.QComboBox()
+        self.experiment_id_combo.addItems(["mixed", "2.0", "3.5", "4.5", "6.0"])
+        self.experiment_id_combo.setCurrentText(DEFAULT_EXPERIMENT_ID_VALUE)
+
+        self.experiment_rho_combo = QtWidgets.QComboBox()
+        self.experiment_rho_combo.addItems(["mixed", "0.1", "0.3", "0.6"])
+        self.experiment_rho_combo.setCurrentText(DEFAULT_EXPERIMENT_RHO_VALUE)
 
         self.synthetic_density_combo = QtWidgets.QComboBox()
         self.synthetic_density_combo.addItems(["low", "medium", "high"])
@@ -1672,6 +1691,8 @@ class ControlPanel(QtWidgets.QWidget):
         rake_selection_rows = [
             self._create_switch_row("rake_lock_on_dwell", self.rake_lock_on_dwell_cb, "rake_lock_on_dwell_desc"),
             self._create_separator(),
+            self._create_switch_row("rake_lock_on_key", self.rake_lock_on_key_cb, "rake_lock_on_key_desc"),
+            self._create_separator(),
             self._create_field_row("rake_selection_hold", self.rake_selection_hold_spin, "rake_selection_hold_desc"),
             self._create_separator(),
             self._create_switch_row("rake_show_gaze", self.rake_show_gaze_cb, "rake_show_gaze_desc"),
@@ -1699,21 +1720,38 @@ class ControlPanel(QtWidgets.QWidget):
         self.experiment_data_dir_row = self._create_field_row("experiment_data_dir", self.experiment_data_picker, "experiment_data_dir_desc")
         self.experiment_session_enabled_row = self._create_switch_row("experiment_session_enabled", self.experiment_session_enabled_cb, "experiment_session_enabled_desc")
         self.experiment_participant_id_row = self._create_field_row("experiment_participant_id", self.experiment_participant_id_edit, "experiment_participant_id_desc")
+        # One shared row: both tasks use the same trials-per-condition spinbox.
         self.experiment_realistic_trials_row = self._create_field_row(
             "experiment_realistic_trials", self.realistic_trials_spin, "experiment_realistic_trials_desc"
         )
-        self.experiment_fitts_trials_row = self._create_field_row(
-            "experiment_fitts_trials", self.fitts_trials_spin, "experiment_fitts_trials_desc"
-        )
-        # Compatibility alias for code that refreshes the old row name.
+        self.experiment_fitts_trials_row = self.experiment_realistic_trials_row
         self.experiment_trials_row = self.experiment_realistic_trials_row
-        self.experiment_difficulty_row = self._create_field_row("experiment_difficulty", self.experiment_difficulty_combo, "experiment_difficulty_desc")
+        self.experiment_id_row = self._create_field_row("experiment_id_value", self.experiment_id_combo, "experiment_id_value_desc")
+        self.experiment_rho_row = self._create_field_row("experiment_rho_value", self.experiment_rho_combo, "experiment_rho_value_desc")
         self.synthetic_density_row = self._create_field_row("synthetic_density", self.synthetic_density_combo, "synthetic_density_desc")
         self.synthetic_blocks_row = self._create_field_row("synthetic_blocks", self.synthetic_blocks_spin, "synthetic_blocks_desc")
         self.experiment_countdown_row = self._create_field_row("experiment_countdown", self.experiment_countdown_spin, "experiment_countdown_desc")
         self.experiment_max_clicks_row = self._create_field_row("experiment_max_clicks", self.experiment_max_clicks_spin, "experiment_max_clicks_desc")
         self.experiment_fullscreen_row = self._create_switch_row("experiment_fullscreen", self.experiment_fullscreen_cb, "experiment_fullscreen_desc")
         self.experiment_show_all_targets_row = self._create_switch_row("experiment_show_all_targets", self.experiment_show_all_targets_cb, "experiment_show_all_targets_desc")
+        self.rake_lock_on_dwell_comparative_cb = self._create_switch()
+        self.rake_lock_on_dwell_comparative_row = self._create_switch_row(
+            "rake_lock_on_dwell", self.rake_lock_on_dwell_comparative_cb, "rake_lock_on_dwell_desc"
+        )
+        self.rake_lock_on_key_comparative_cb = self._create_switch()
+        self.rake_lock_on_key_comparative_row = self._create_switch_row(
+            "rake_lock_on_key", self.rake_lock_on_key_comparative_cb, "rake_lock_on_key_desc"
+        )
+        self.rake_selection_hold_comparative_spin = QtWidgets.QDoubleSpinBox()
+        self.rake_selection_hold_comparative_spin.setKeyboardTracking(False)
+        self.rake_selection_hold_comparative_spin.setDecimals(2)
+        self.rake_selection_hold_comparative_spin.setRange(0.0, 5.0)
+        self.rake_selection_hold_comparative_spin.setSingleStep(0.05)
+        self.rake_selection_hold_comparative_spin.setValue(DEFAULT_RAKE_SELECTION_HOLD)
+        self.rake_selection_hold_comparative_spin.setEnabled(False)
+        self.rake_selection_hold_comparative_row = self._create_field_row(
+            "rake_selection_hold", self.rake_selection_hold_comparative_spin, "rake_selection_hold_desc"
+        )
         self.experiment_note_row = self._create_note("experiment_note")
         self._experiment_param_rows = [
             self._create_separator(),
@@ -1727,9 +1765,9 @@ class ControlPanel(QtWidgets.QWidget):
             self._create_separator(),
             self.experiment_realistic_trials_row,
             self._create_separator(),
-            self.experiment_fitts_trials_row,
+            self.experiment_id_row,
             self._create_separator(),
-            self.experiment_difficulty_row,
+            self.experiment_rho_row,
             self._create_separator(),
             self.synthetic_density_row,
             self._create_separator(),
@@ -1742,6 +1780,12 @@ class ControlPanel(QtWidgets.QWidget):
             self.experiment_fullscreen_row,
             self._create_separator(),
             self.experiment_show_all_targets_row,
+            self._create_separator(),
+            self.rake_lock_on_dwell_comparative_row,
+            self._create_separator(),
+            self.rake_lock_on_key_comparative_row,
+            self._create_separator(),
+            self.rake_selection_hold_comparative_row,
             self._create_separator(),
             self.experiment_note_row,
         ]
@@ -1897,6 +1941,15 @@ class ControlPanel(QtWidgets.QWidget):
         self.disable_accel_cb.toggled.connect(self._handle_runtime_option_change)
         self.log_data_cb.toggled.connect(self._handle_runtime_option_change)
         self.rake_lock_on_dwell_cb.toggled.connect(self._handle_runtime_option_change)
+        self.rake_lock_on_dwell_comparative_cb.toggled.connect(self._handle_runtime_option_change)
+        self.rake_lock_on_dwell_cb.toggled.connect(self.rake_lock_on_dwell_comparative_cb.setChecked)
+        self.rake_lock_on_dwell_comparative_cb.toggled.connect(self.rake_lock_on_dwell_cb.setChecked)
+        self.rake_lock_on_key_cb.toggled.connect(self._handle_runtime_option_change)
+        self.rake_lock_on_key_comparative_cb.toggled.connect(self._handle_runtime_option_change)
+        self.rake_selection_hold_comparative_spin.valueChanged.connect(self._handle_runtime_option_change)
+        self.rake_selection_hold_spin.valueChanged.connect(self.rake_selection_hold_comparative_spin.setValue)
+        self.rake_selection_hold_comparative_spin.valueChanged.connect(self.rake_selection_hold_spin.setValue)
+        self.rake_lock_on_dwell_comparative_cb.toggled.connect(self.rake_selection_hold_comparative_spin.setEnabled)
         self.rake_show_gaze_cb.toggled.connect(self._handle_runtime_option_change)
         self.rake_show_debug_status_cb.toggled.connect(self._handle_runtime_option_change)
         self.rake_snap_system_cursor_cb.toggled.connect(self._handle_runtime_option_change)
@@ -1912,7 +1965,8 @@ class ControlPanel(QtWidgets.QWidget):
         self.baseline_participant_id_edit.textChanged.connect(self._handle_runtime_option_change)
         self.experiment_trials_spin.valueChanged.connect(self._handle_runtime_option_change)
         self.fitts_trials_spin.valueChanged.connect(self._handle_runtime_option_change)
-        self.experiment_difficulty_combo.currentIndexChanged.connect(self._handle_runtime_option_change)
+        self.experiment_id_combo.currentIndexChanged.connect(self._handle_runtime_option_change)
+        self.experiment_rho_combo.currentIndexChanged.connect(self._handle_runtime_option_change)
         self.synthetic_density_combo.currentIndexChanged.connect(self._handle_runtime_option_change)
         self.synthetic_blocks_spin.valueChanged.connect(self._handle_runtime_option_change)
         self.experiment_countdown_spin.valueChanged.connect(self._handle_runtime_option_change)
@@ -1946,6 +2000,7 @@ class ControlPanel(QtWidgets.QWidget):
         self._register_numeric_field(self.rake_gaze_offset_x_spin, "rake_gaze_offset_x")
         self._register_numeric_field(self.rake_gaze_offset_y_spin, "rake_gaze_offset_y")
         self._register_numeric_field(self.rake_selection_hold_spin, "rake_selection_hold")
+        self._register_numeric_field(self.rake_selection_hold_comparative_spin, "rake_selection_hold")
         self._register_numeric_field(self.experiment_trials_spin, "experiment_trials")
         self._register_numeric_field(self.fitts_trials_spin, "fitts_trials")
         self._register_numeric_field(self.experiment_countdown_spin, "experiment_countdown")
@@ -2118,35 +2173,25 @@ class ControlPanel(QtWidgets.QWidget):
             elif digits:
                 break
         if digits and int(digits) % 2 == 1:
-            return "control_fitts_synthetic"
-        return "control_our_task"
+            return "synthetic_fitts"
+        return "realistic"
 
     def _update_experiment_trials_text(self, task_type: str | None = None):
         if not hasattr(self, "experiment_realistic_trials_row"):
             return
-        for row, text_key, description_key, widget in (
-            (
-                self.experiment_realistic_trials_row,
-                "experiment_realistic_trials",
-                "experiment_realistic_trials_desc",
-                self.realistic_trials_spin,
-            ),
-            (
-                self.experiment_fitts_trials_row,
-                "experiment_fitts_trials",
-                "experiment_fitts_trials_desc",
-                self.fitts_trials_spin,
-            ),
-        ):
-            label = getattr(row, "setting_label", None)
-            description = getattr(row, "setting_description", None)
-            if label is not None:
-                label.setText(self._text(text_key))
-            if description is not None:
-                description.setText(self._text(description_key))
-            for help_widget in getattr(row, "help_widgets", []):
-                self._help_prompt_keys[help_widget] = (text_key, description_key)
-            self._focus_prompt_keys[widget] = text_key
+        row = self.experiment_realistic_trials_row
+        text_key = "experiment_realistic_trials"
+        description_key = "experiment_realistic_trials_desc"
+        widget = self.experiment_trials_spin
+        label = getattr(row, "setting_label", None)
+        description = getattr(row, "setting_description", None)
+        if label is not None:
+            label.setText(self._text(text_key))
+        if description is not None:
+            description.setText(self._text(description_key))
+        for help_widget in getattr(row, "help_widgets", []):
+            self._help_prompt_keys[help_widget] = (text_key, description_key)
+        self._focus_prompt_keys[widget] = text_key
 
     def _set_experiment_protocol(self, task_type: str):
         task_type = task_type if task_type in {"realistic", "comparative"} else "realistic"
@@ -2246,21 +2291,21 @@ class ControlPanel(QtWidgets.QWidget):
             if getattr(self, "comparative_task_part_combo", None) is not None
             else DEFAULT_COMPARATIVE_TASK_PART
         )
-        comparative_synthetic_task = comparative_test_mode and comparative_part == "control_fitts_synthetic"
-        comparative_realistic_task = comparative_test_mode and comparative_part == "control_our_task"
+        comparative_synthetic_task = comparative_test_mode and comparative_part == "synthetic_fitts"
+        comparative_realistic_task = comparative_test_mode and comparative_part == "realistic"
         synthetic_full_session = usage_experiment and synthetic_task
         comparative_full_session = usage_experiment and comparative_task
         managed_full_session = synthetic_full_session or comparative_full_session
+        # One shared trials-per-condition field: visible whenever either task
+        # would need it.
         realistic_trials_visible = experiment_enabled and (
             comparative_full_mode
             or comparative_realistic_task
             or (not comparative_task and not synthetic_task)
-        )
-        fitts_trials_visible = experiment_enabled and (
-            synthetic_task
+            or synthetic_task
             or comparative_synthetic_task
-            or comparative_full_mode
         )
+        fitts_trials_visible = realistic_trials_visible
         technique_options_visible = not usage_experiment and not baseline_enabled
         experiment_session_enabled = (
             usage_experiment or (experiment_enabled and self.experiment_session_enabled_cb.isChecked())
@@ -2341,14 +2386,29 @@ class ControlPanel(QtWidgets.QWidget):
             self.experiment_note_row.setVisible(
                 experiment_enabled and not synthetic_task and not comparative_synthetic_task
             )
+        if getattr(self, "rake_lock_on_dwell_comparative_row", None) is not None:
+            self.rake_lock_on_dwell_comparative_row.setVisible(experiment_enabled and comparative_task)
+        if getattr(self, "rake_lock_on_key_comparative_row", None) is not None:
+            self.rake_lock_on_key_comparative_row.setVisible(experiment_enabled and comparative_task)
+        if getattr(self, "rake_selection_hold_comparative_row", None) is not None:
+            self.rake_selection_hold_comparative_row.setVisible(experiment_enabled and comparative_task)
+        if getattr(self, "rake_selection_hold_comparative_spin", None) is not None:
+            self.rake_selection_hold_comparative_spin.setEnabled(self.rake_lock_on_dwell_comparative_cb.isChecked())
         for row in (
             getattr(self, "experiment_participant_id_row", None),
         ):
             if row is not None:
                 row.setVisible(participant_id_visible)
-        if getattr(self, "experiment_difficulty_row", None) is not None:
-            self.experiment_difficulty_row.setVisible(
+        if getattr(self, "experiment_id_row", None) is not None:
+            self.experiment_id_row.setVisible(
                 experiment_enabled and not experiment_session_enabled and not managed_full_session
+            )
+        if getattr(self, "experiment_rho_row", None) is not None:
+            self.experiment_rho_row.setVisible(
+                experiment_enabled
+                and not synthetic_task
+                and not experiment_session_enabled
+                and not managed_full_session
             )
         for widget in (
             self.experiment_data_picker,
@@ -2360,7 +2420,8 @@ class ControlPanel(QtWidgets.QWidget):
             self.experiment_task_type_combo,
             self.experiment_trials_spin,
             self.fitts_trials_spin,
-            self.experiment_difficulty_combo,
+            self.experiment_id_combo,
+            self.experiment_rho_combo,
             self.synthetic_density_combo,
             self.synthetic_blocks_spin,
             self.experiment_countdown_spin,
@@ -2377,8 +2438,11 @@ class ControlPanel(QtWidgets.QWidget):
         self.fitts_trials_spin.setEnabled(fitts_trials_visible)
         self.experiment_session_enabled_cb.setEnabled(experiment_enabled and not synthetic_task and not comparative_task)
         self.experiment_participant_id_edit.setEnabled(participant_id_visible)
-        self.experiment_difficulty_combo.setEnabled(
+        self.experiment_id_combo.setEnabled(
             experiment_enabled and not managed_full_session and (synthetic_task or not experiment_session_enabled)
+        )
+        self.experiment_rho_combo.setEnabled(
+            experiment_enabled and not synthetic_task and not managed_full_session and not experiment_session_enabled
         )
         self.synthetic_density_combo.setEnabled(experiment_enabled and synthetic_task and not synthetic_full_session)
         self.synthetic_blocks_spin.setEnabled(experiment_enabled and (synthetic_full_session or comparative_synthetic_task or comparative_full_mode))
@@ -2422,6 +2486,7 @@ class ControlPanel(QtWidgets.QWidget):
         ):
             widget.setEnabled(False)
         self.rake_lock_on_dwell_cb.setEnabled(rake_enabled)
+        self.rake_lock_on_key_cb.setEnabled(rake_enabled)
         self.rake_show_gaze_cb.setEnabled(rake_enabled)
         self.rake_show_debug_status_cb.setEnabled(rake_enabled)
         self.rake_snap_system_cursor_cb.setEnabled(rake_enabled)
@@ -2592,6 +2657,17 @@ class ControlPanel(QtWidgets.QWidget):
         elif sender is self.rake_lock_on_dwell_cb:
             key = "turn_on" if self.rake_lock_on_dwell_cb.isChecked() else "turn_off"
             self._speak_control_name(self._format_text(key, name=self._text("rake_lock_on_dwell")))
+        elif sender is self.rake_lock_on_dwell_comparative_cb:
+            key = "turn_on" if self.rake_lock_on_dwell_comparative_cb.isChecked() else "turn_off"
+            self._speak_control_name(self._format_text(key, name=self._text("rake_lock_on_dwell")))
+        elif sender is self.rake_lock_on_key_cb:
+            key = "turn_on" if self.rake_lock_on_key_cb.isChecked() else "turn_off"
+            self._speak_control_name(self._format_text(key, name=self._text("rake_lock_on_key")))
+        elif sender is self.rake_lock_on_key_comparative_cb:
+            key = "turn_on" if self.rake_lock_on_key_comparative_cb.isChecked() else "turn_off"
+            self._speak_control_name(self._format_text(key, name=self._text("rake_lock_on_key")))
+        elif sender is self.rake_selection_hold_comparative_spin:
+            self._speak_auto_text(self.rake_selection_hold_comparative_spin.text())
         elif sender is self.rake_show_gaze_cb:
             key = "turn_on" if self.rake_show_gaze_cb.isChecked() else "turn_off"
             self._speak_control_name(self._format_text(key, name=self._text("rake_show_gaze")))
@@ -3254,6 +3330,8 @@ error "No supported browser window found"
             rake_gaze_offset_y=DEFAULT_RAKE_GAZE_OFFSET_Y,
             rake_selection_hold=self.rake_selection_hold_spin.value(),
             rake_lock_on_dwell=self.rake_lock_on_dwell_cb.isChecked(),
+            rake_lock_on_key=self.rake_lock_on_key_cb.isChecked(),
+            rake_lock_on_key_comparative=self.rake_lock_on_key_comparative_cb.isChecked(),
             rake_show_gaze=self.rake_show_gaze_cb.isChecked(),
             rake_show_debug_status=self.rake_show_debug_status_cb.isChecked(),
             rake_snap_system_cursor=self.rake_snap_system_cursor_cb.isChecked(),
@@ -3270,7 +3348,8 @@ error "No supported browser window found"
             experiment_trials=self.realistic_trials_spin.value(),
             realistic_trials=self.realistic_trials_spin.value(),
             fitts_trials=self.fitts_trials_spin.value(),
-            experiment_difficulty=self.experiment_difficulty_combo.currentText(),
+            experiment_id_value=self.experiment_id_combo.currentText(),
+            experiment_rho_value=self.experiment_rho_combo.currentText(),
             synthetic_density=self.synthetic_density_combo.currentText(),
             synthetic_blocks=self.synthetic_blocks_spin.value(),
             experiment_countdown=self.experiment_countdown_spin.value(),
@@ -3324,6 +3403,10 @@ error "No supported browser window found"
         self.rake_gaze_offset_y_spin.setValue(DEFAULT_RAKE_GAZE_OFFSET_Y)
         self.rake_selection_hold_spin.setValue(cfg.rake_selection_hold)
         self.rake_lock_on_dwell_cb.setChecked(cfg.rake_lock_on_dwell)
+        self.rake_lock_on_dwell_comparative_cb.setChecked(cfg.rake_lock_on_dwell)
+        self.rake_lock_on_key_cb.setChecked(cfg.rake_lock_on_key)
+        self.rake_lock_on_key_comparative_cb.setChecked(cfg.rake_lock_on_key_comparative)
+        self.rake_selection_hold_comparative_spin.setValue(cfg.rake_selection_hold)
         self.rake_show_gaze_cb.setChecked(cfg.rake_show_gaze)
         self.rake_show_debug_status_cb.setChecked(cfg.rake_show_debug_status)
         self.rake_snap_system_cursor_cb.setChecked(cfg.rake_snap_system_cursor)
@@ -3341,7 +3424,7 @@ error "No supported browser window found"
         self._set_combo_data(
             self.comparative_task_part_combo,
             cfg.comparative_task_part
-            if cfg.comparative_task_part in {"control_our_task", "control_fitts_synthetic"}
+            if cfg.comparative_task_part in {"realistic", "synthetic_fitts"}
             else DEFAULT_COMPARATIVE_TASK_PART,
         )
         self._comparative_run_mode = (
@@ -3355,8 +3438,13 @@ error "No supported browser window found"
         fitts_trials = int(getattr(cfg, "fitts_trials", legacy_trials))
         self.realistic_trials_spin.setValue(max(1, min(1000, realistic_trials)))
         self.fitts_trials_spin.setValue(max(1, min(1000, fitts_trials)))
-        self.experiment_difficulty_combo.setCurrentText(
-            cfg.experiment_difficulty if cfg.experiment_difficulty in {"easy", "medium", "hard", "mixed"} else DEFAULT_EXPERIMENT_DIFFICULTY
+        experiment_id_value = getattr(cfg, "experiment_id_value", DEFAULT_EXPERIMENT_ID_VALUE)
+        self.experiment_id_combo.setCurrentText(
+            experiment_id_value if experiment_id_value in {"2.0", "3.5", "4.5", "6.0", "mixed"} else DEFAULT_EXPERIMENT_ID_VALUE
+        )
+        experiment_rho_value = getattr(cfg, "experiment_rho_value", DEFAULT_EXPERIMENT_RHO_VALUE)
+        self.experiment_rho_combo.setCurrentText(
+            experiment_rho_value if experiment_rho_value in {"0.1", "0.3", "0.6", "mixed"} else DEFAULT_EXPERIMENT_RHO_VALUE
         )
         self.synthetic_density_combo.setCurrentText(
             cfg.synthetic_density
@@ -3449,6 +3537,8 @@ error "No supported browser window found"
         cfg.rake_gaze_offset_y = DEFAULT_RAKE_GAZE_OFFSET_Y
         cfg.rake_selection_hold = DEFAULT_RAKE_SELECTION_HOLD
         cfg.rake_lock_on_dwell = DEFAULT_RAKE_LOCK_ON_DWELL
+        cfg.rake_lock_on_key = DEFAULT_RAKE_LOCK_ON_KEY
+        cfg.rake_lock_on_key_comparative = DEFAULT_RAKE_LOCK_ON_KEY
         cfg.rake_show_gaze = DEFAULT_RAKE_SHOW_GAZE
         cfg.rake_show_debug_status = DEFAULT_RAKE_SHOW_DEBUG_STATUS
         cfg.rake_snap_system_cursor = DEFAULT_RAKE_SNAP_SYSTEM_CURSOR
@@ -3466,7 +3556,8 @@ error "No supported browser window found"
         cfg.experiment_trials = DEFAULT_REALISTIC_EXPERIMENT_TRIALS
         cfg.realistic_trials = DEFAULT_REALISTIC_EXPERIMENT_TRIALS
         cfg.fitts_trials = DEFAULT_FITTS_EXPERIMENT_TRIALS
-        cfg.experiment_difficulty = DEFAULT_EXPERIMENT_DIFFICULTY
+        cfg.experiment_id_value = DEFAULT_EXPERIMENT_ID_VALUE
+        cfg.experiment_rho_value = DEFAULT_EXPERIMENT_RHO_VALUE
         cfg.synthetic_density = DEFAULT_SYNTHETIC_DENSITY
         cfg.synthetic_blocks = DEFAULT_SYNTHETIC_BLOCKS
         cfg.experiment_countdown = DEFAULT_EXPERIMENT_COUNTDOWN
@@ -3589,6 +3680,8 @@ error "No supported browser window found"
             ]
             if cfg.rake_lock_on_dwell:
                 cmd.append("--lock-on-dwell")
+            if cfg.rake_lock_on_key:
+                cmd.append("--lock-on-key")
             if cfg.rake_use_calibration:
                 cmd += ["--calib-points", str(cfg.rake_calib_points)]
                 # In tester mode, enabling calibration means Démarrer runs a fresh calibration.
@@ -3632,12 +3725,12 @@ error "No supported browser window found"
         if cfg.experiment_task_type == "comparative":
             if cfg.comparative_run_mode == "full":
                 return self._build_comparative_session_command(cfg)
-            if cfg.comparative_task_part == "control_fitts_synthetic":
+            if cfg.comparative_task_part == "synthetic_fitts":
                 return self._build_synthetic_fitts_session_command(
                     cfg,
                     output_dir=self._control_output_dir(
                         cfg,
-                        "control_fitts_synthetic",
+                        "test_fitts_synthetic_logs",
                         "synthetic_fitts",
                     ),
                 )
@@ -3645,8 +3738,8 @@ error "No supported browser window found"
                 cfg,
                 output_dir=self._control_output_dir(
                     cfg,
-                    "control_our_task",
-                    "our_task",
+                    "test_realistic_logs",
+                    "realistic",
                 ),
             )
         if cfg.experiment_task_type == "synthetic_fitts":
@@ -3670,8 +3763,10 @@ error "No supported browser window found"
             cfg.experiment_data_dir,
             "--trials",
             str(cfg.realistic_trials),
-            "--difficulty",
-            cfg.experiment_difficulty,
+            "--id-value",
+            cfg.experiment_id_value,
+            "--rho-value",
+            cfg.experiment_rho_value,
             "--countdown",
             str(cfg.experiment_countdown),
             "--max-clicks",
@@ -3730,6 +3825,8 @@ error "No supported browser window found"
             ]
             if cfg.rake_lock_on_dwell:
                 cmd.append("--ninja-lock-on-dwell")
+            if cfg.rake_lock_on_key_comparative:
+                cmd.append("--ninja-lock-on-key")
             # The tester gaze marker is only for calibration/debugging and must
             # not carry over into experimental trials.
             cmd.append("--ninja-hide-gaze-point")
@@ -3746,9 +3843,6 @@ error "No supported browser window found"
 
     def _build_synthetic_fitts_command(self, cfg: PanelConfig):
         technique = self._experiment_technique_for_config(cfg)
-        difficulty = cfg.experiment_difficulty
-        if difficulty == "mixed":
-            difficulty = "medium"
         cmd = [
             sys.executable,
             "-m",
@@ -3761,8 +3855,10 @@ error "No supported browser window found"
             technique,
             "--trials",
             str(cfg.fitts_trials),
-            "--difficulty",
-            difficulty,
+        ]
+        if cfg.experiment_id_value != "mixed":
+            cmd += ["--id-value", cfg.experiment_id_value]
+        cmd += [
             "--density",
             cfg.synthetic_density,
             "--countdown",
@@ -3821,6 +3917,8 @@ error "No supported browser window found"
             ]
             if cfg.rake_lock_on_dwell:
                 cmd.append("--ninja-lock-on-dwell")
+            if cfg.rake_lock_on_key_comparative:
+                cmd.append("--ninja-lock-on-key")
             # The tester gaze marker is only for calibration/debugging and must
             # not carry over into experimental trials.
             cmd.append("--ninja-hide-gaze-point")
@@ -3916,6 +4014,8 @@ error "No supported browser window found"
             cmd.append("--semantic-disable-accel")
         if cfg.rake_lock_on_dwell:
             cmd.append("--ninja-lock-on-dwell")
+        if cfg.rake_lock_on_key_comparative:
+            cmd.append("--ninja-lock-on-key")
         # The tester gaze marker is only for calibration/debugging and must
         # not carry over into experimental trials.
         cmd.append("--ninja-hide-gaze-point")
@@ -4017,6 +4117,8 @@ error "No supported browser window found"
             cmd.append("--semantic-disable-accel")
         if cfg.rake_lock_on_dwell:
             cmd.append("--ninja-lock-on-dwell")
+        if cfg.rake_lock_on_key_comparative:
+            cmd.append("--ninja-lock-on-key")
         # The tester gaze marker is only for calibration/debugging and must
         # not carry over into experimental trials.
         cmd.append("--ninja-hide-gaze-point")
@@ -4103,6 +4205,8 @@ error "No supported browser window found"
         ]
         if cfg.rake_lock_on_dwell:
             cmd.append("--ninja-lock-on-dwell")
+        if cfg.rake_lock_on_key_comparative:
+            cmd.append("--ninja-lock-on-key")
         # The tester gaze marker is only for calibration/debugging and must
         # not carry over into experimental trials.
         cmd.append("--ninja-hide-gaze-point")

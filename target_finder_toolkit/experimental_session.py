@@ -35,7 +35,9 @@ from target_finder_toolkit.experimental_task import (
     DEFAULT_NINJA_GAZE_SMOOTHING,
     DEFAULT_NINJA_SELECTION_HOLD,
     DEFAULT_NINJA_SPACING,
+    ID_VALUES,
     PROJECT_ROOT,
+    RHO_VALUES,
     ExperimentalTaskWindow,
     build_technique_command,
     load_dataset,
@@ -49,7 +51,19 @@ from target_finder_toolkit.windows_process_utils import (
 
 
 TECHNIQUES = ("mouse", "bubble", "dynaspot", "semantic", "ninja_cursors")
-DIFFICULTIES = ("easy", "medium", "hard")
+# Kept in sync with synthetic_fitts_session.py's TECHNIQUE_LABEL_MAP.
+TECHNIQUE_LABEL_MAP = {
+    "A": "mouse",
+    "B": "semantic",
+    "C": "bubble",
+    "D": "dynaspot",
+    "E": "ninja_cursors",
+}
+# Same file the synthetic task reads: one row per participant, 60
+# "label,id,rho" tokens grouped by technique. Reusing it here means both
+# tasks present the same technique order AND the same ID x rho order within
+# each technique for a given participant.
+DEFAULT_CONDITIONS_FILE = PROJECT_ROOT / "experiment_design" / "conditions.csv"
 TECHNIQUE_LABELS = {
     "mouse": "Souris standard",
     "bubble": "Bubble Cursor",
@@ -85,7 +99,8 @@ def is_english(language: str | None) -> bool:
 class ExperimentBlock:
     block_id: str
     technique: str
-    difficulty: str
+    id_value: float
+    rho_value: float
     trials: int
 
 
@@ -101,15 +116,60 @@ class PreloadedTechnique:
     ready: bool = False
 
 
-def make_blocks(trials_per_block: int) -> list[ExperimentBlock]:
+def _default_condition_order() -> list[tuple[float, float]]:
+    return [(id_value, rho_value) for id_value in ID_VALUES for rho_value in RHO_VALUES]
+
+
+def _load_condition_order_from_csv(
+    path: Path, *, participant_id: str, seed: int | None
+) -> list[tuple[float, float]] | None:
+    """Read the (id, rho) order from conditions.csv's row for this
+    participant (every technique group in a row shares one order -- take the
+    first occurrence of each pair). Returns None if unusable."""
+    path = Path(path)
+    if not path.is_file():
+        return None
+    lines = [line.strip() for line in path.read_text(encoding="utf-8-sig").splitlines() if line.strip()]
+    if not lines:
+        return None
+    row_index = _participant_row_index(participant_id, seed, len(lines))
+    row = lines[row_index]
+    tokens_field = row.split("\t")[-1]
+    order: list[tuple[float, float]] = []
+    seen: set[tuple[float, float]] = set()
+    for token in tokens_field.split(";"):
+        parts = [part.strip() for part in token.strip().split(",")]
+        if len(parts) != 3:
+            continue
+        try:
+            pair = (float(parts[1]), float(parts[2]))
+        except ValueError:
+            continue
+        if pair in seen:
+            continue
+        seen.add(pair)
+        order.append(pair)
+    valid_pairs = {(idv, rv) for idv in ID_VALUES for rv in RHO_VALUES}
+    if set(order) != valid_pairs:
+        return None
+    return order
+
+
+def make_blocks(
+    trials_per_block: int,
+    *,
+    condition_order: list[tuple[float, float]] | None = None,
+) -> list[ExperimentBlock]:
+    order = condition_order if condition_order is not None else _default_condition_order()
     blocks: list[ExperimentBlock] = []
     for technique in TECHNIQUES:
-        for difficulty in DIFFICULTIES:
+        for id_value, rho_value in order:
             blocks.append(
                 ExperimentBlock(
-                    block_id=f"{technique}_{difficulty}",
+                    block_id=f"{technique}_id{id_value:g}_rho{rho_value:g}",
                     technique=technique,
-                    difficulty=difficulty,
+                    id_value=id_value,
+                    rho_value=rho_value,
                     trials=int(trials_per_block),
                 )
             )
@@ -165,19 +225,71 @@ def _participant_row_index(participant_id: str, seed: int | None, row_count: int
     return value % row_count
 
 
+def _load_technique_order_rows(path: Path) -> list[list[str]] | None:
+    """Read technique order from conditions.csv's own rows (one row per
+    participant, 60 "label,id,rho" tokens grouped by technique): the order in
+    which distinct technique labels first appear. Returns None if the file
+    doesn't exist so callers can fall back to a live Latin square."""
+    path = Path(path)
+    if not path.is_file():
+        return None
+    rows = []
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        tokens_field = line.split("\t")[-1]
+        order: list[str] = []
+        seen: set[str] = set()
+        for token in tokens_field.split(";"):
+            label = token.strip().split(",")[0].strip()
+            if not label:
+                continue
+            technique = TECHNIQUE_LABEL_MAP.get(label, label)
+            if technique in seen:
+                continue
+            seen.add(technique)
+            order.append(technique)
+        if order:
+            rows.append(order)
+    return rows or None
+
+
 def counterbalanced_order(
     blocks: list[ExperimentBlock],
     *,
     participant_id: str,
     seed: int | None = None,
+    technique_order_file: Path | str | None = DEFAULT_CONDITIONS_FILE,
 ) -> list[ExperimentBlock]:
-    """Return a participant-specific block order using a Balanced Latin Square."""
+    """Return a participant-specific block order: techniques are ordered by a
+    Latin square (kept together as a block so a technique isn't relaunched
+    mid-session), and each technique's own ID x rho conditions keep their
+    generation order within that group."""
     if not blocks:
         return []
-    square = balanced_latin_square_indices(len(blocks))
-    row_index = _participant_row_index(participant_id, seed, len(square))
-    order_indices = square[row_index]
-    return [blocks[idx] for idx in order_indices]
+
+    grouped: dict[str, list[ExperimentBlock]] = {}
+    for block in blocks:
+        grouped.setdefault(block.technique, []).append(block)
+    techniques_present = list(grouped.keys())
+
+    rows = _load_technique_order_rows(Path(technique_order_file)) if technique_order_file else None
+    technique_order = None
+    if rows is not None:
+        row_index = _participant_row_index(participant_id, seed, len(rows))
+        candidate = rows[row_index]
+        if set(candidate) == set(techniques_present):
+            technique_order = candidate
+    if technique_order is None:
+        square = balanced_latin_square_indices(len(techniques_present))
+        row_index = _participant_row_index(participant_id, seed, len(square))
+        technique_order = [techniques_present[idx] for idx in square[row_index]]
+
+    ordered: list[ExperimentBlock] = []
+    for technique in technique_order:
+        ordered.extend(grouped[technique])
+    return ordered
 
 
 def write_event(log_file: Path, payload: dict):
@@ -229,12 +341,18 @@ def add_session_technique_arguments(parser: argparse.ArgumentParser):
     parser.add_argument("--ninja-gaze-offset-y", type=float, default=DEFAULT_NINJA_GAZE_OFFSET_Y)
     parser.add_argument("--ninja-selection-hold", type=float, default=DEFAULT_NINJA_SELECTION_HOLD)
     parser.add_argument("--ninja-lock-on-dwell", action="store_true")
+    parser.add_argument("--ninja-lock-on-key", action="store_true")
     parser.add_argument("--ninja-hide-gaze-point", action="store_true")
     parser.add_argument("--ninja-hide-debug-status", dest="ninja_hide_debug_status", action="store_true", default=True)
     parser.add_argument("--ninja-show-debug-status", dest="ninja_hide_debug_status", action="store_false")
     parser.add_argument("--ninja-snap-system-cursor-to-active", action="store_true")
     parser.add_argument("--ninja-calib-points", type=int, choices=[5, 9, 13], default=5)
     parser.add_argument("--ninja-auto-calibrate", action="store_true")
+    parser.add_argument(
+        "--ninja-wait-ready",
+        action="store_true",
+        help="Wait for Ninja Cursors to finish warming up even when not calibrating (e.g. a later comparative task reusing an earlier calibration)",
+    )
     parser.add_argument("--ninja-without-targetfinder", dest="ninja_without_targetfinder", action="store_true")
     parser.add_argument("--ninja-with-targetfinder", dest="ninja_without_targetfinder", action="store_false")
     parser.set_defaults(ninja_without_targetfinder=True)
@@ -279,6 +397,8 @@ def task_runtime_args(args) -> list[str]:
         values += ["--ninja-screen-height-cm", str(args.ninja_screen_height_cm)]
     if args.ninja_lock_on_dwell:
         values.append("--ninja-lock-on-dwell")
+    if args.ninja_lock_on_key:
+        values.append("--ninja-lock-on-key")
     if args.ninja_hide_gaze_point:
         values.append("--ninja-hide-gaze-point")
     if getattr(args, "ninja_hide_debug_status", True):
@@ -289,6 +409,8 @@ def task_runtime_args(args) -> list[str]:
         values.append("--ninja-snap-system-cursor-to-active")
     if args.ninja_auto_calibrate:
         values.append("--ninja-auto-calibrate")
+    if getattr(args, "ninja_wait_ready", False):
+        values.append("--ninja-wait-ready")
     # Full experimental sessions use annotation-control files with known labels,
     # not live TargetFinder/YOLO detections.
     if getattr(args, "ninja_without_targetfinder", True):
@@ -298,20 +420,23 @@ def task_runtime_args(args) -> list[str]:
     return values
 
 
-def _format_block_label(block: ExperimentBlock, *, language: str = "French") -> str:
+def _format_block_label(block, *, language: str = "French") -> str:
+    # Shared by both realistic (ExperimentBlock: rho_value) and synthetic
+    # (SyntheticSessionBlock: rho, or density name) block dataclasses.
     id_value = getattr(block, "id_value", None)
-    density = getattr(block, "density", None)
+    rho_display = getattr(block, "rho_value", None)
+    if rho_display is None:
+        rho_display = getattr(block, "rho", None)
+    if rho_display is None:
+        rho_display = getattr(block, "density", None)
+    id_part = f" · ID={float(id_value):g}" if id_value is not None else ""
     if is_english(language):
         technique = TECHNIQUE_LABELS_EN.get(block.technique, block.technique)
-        label = f"{technique} · difficulty {block.difficulty}"
-        if id_value is not None and density is not None:
-            label += f" · ID={float(id_value):g} · density={density}"
-        return label
+        rho_part = f" · density={rho_display}" if rho_display is not None else ""
+        return f"{technique}{id_part}{rho_part}"
     technique = TECHNIQUE_LABELS.get(block.technique, block.technique)
-    label = f"{technique} · difficulté {block.difficulty}"
-    if id_value is not None and density is not None:
-        label += f" · ID={float(id_value):g} · densité={density}"
-    return label
+    rho_part = f" · densité={rho_display}" if rho_display is not None else ""
+    return f"{technique}{id_part}{rho_part}"
 
 
 def _technique_instruction(block: ExperimentBlock, *, language: str = "French") -> str:
@@ -825,8 +950,10 @@ def build_block_command(
         str(args.data_dir),
         "--technique",
         block.technique,
-        "--difficulty",
-        block.difficulty,
+        "--id-value",
+        str(block.id_value),
+        "--rho-value",
+        str(block.rho_value),
         "--trials",
         str(block.trials),
         "--countdown",
@@ -1266,16 +1393,10 @@ def install_termination_cleanup_handler():
     """Make sure SIGTERM (e.g. the control panel's Stop button) still tears
     down preloaded technique subprocesses instead of orphaning them.
 
-    Each preloaded technique (bubble cursor, semantic pointing, dynaspot,
-    Ninja Cursors, ...) runs detached in its own process group
-    (start_new_session=True) so that it survives if this process dies
-    unexpectedly; only this process explicitly stopping it (via
-    stop_preloaded_techniques) actually ends it. Python's default SIGTERM
-    disposition kills a process immediately without running any `finally`
-    block, so without this handler a plain SIGTERM (not SIGINT, which Python
-    already turns into a catchable KeyboardInterrupt) leaves every preloaded
-    technique running forever -- exactly the leftover Python processes seen
-    in the Dock/menu bar after closing the control panel.
+    Each preloaded technique runs detached in its own process group, so it
+    survives this process dying unless explicitly stopped. Python's default
+    SIGTERM handling skips `finally` blocks, so without this handler a plain
+    SIGTERM leaves every preloaded technique running forever.
     """
     try:
         signal.signal(signal.SIGTERM, _handle_termination_signal)
@@ -1308,7 +1429,8 @@ def run_block_in_process(
         dataset,
         technique=block.technique,
         count=block.trials,
-        difficulty=block.difficulty,
+        id_value=block.id_value,
+        rho_value=block.rho_value,
         seed=None,
     )
 
@@ -1382,12 +1504,12 @@ def run_block_in_process(
 def main():
     install_termination_cleanup_handler()
     parser = argparse.ArgumentParser(
-        description="Run a counterbalanced experimental session made of technique/difficulty blocks."
+        description="Run a counterbalanced experimental session made of technique/ID/rho blocks."
     )
     parser.add_argument("--participant", required=True, help="Participant id, e.g. P01")
     parser.add_argument("--language", choices=["French", "English"], default="French", help="UI language for experimental screens")
     parser.add_argument("--data-dir", default=str(DEFAULT_DATA_DIR), help="Annotated dataset directory")
-    parser.add_argument("--trials-per-block", type=int, default=9, help="Trials per technique/difficulty block")
+    parser.add_argument("--trials-per-block", type=int, default=9, help="Trials per technique/ID/rho block")
     parser.add_argument("--countdown", type=float, default=0.0, help="Countdown seconds passed to each block")
     parser.add_argument("--max-clicks", type=int, default=1, help="Maximum clicks per trial")
     parser.add_argument("--seed", type=int, default=None, help="Optional seed combined with participant id")
@@ -1403,6 +1525,7 @@ def main():
     parser.add_argument("--cursor-log-hz", type=float, default=30.0, help="Experiment-level cursor sampling rate")
     parser.add_argument("--technique-start-delay", type=float, default=None, help="Override technique startup delay")
     parser.add_argument("--no-preload-techniques", action="store_true", help="Fallback: launch each technique inside each block")
+    parser.add_argument("--conditions-file", default=str(DEFAULT_CONDITIONS_FILE), help="Synthetic task's conditions CSV, reused here for the same per-participant technique order and ID x rho order (falls back to a live Latin square / ascending order if missing)")
     parser.add_argument("--dry-run", action="store_true", help="Print generated order without running blocks")
     add_session_technique_arguments(parser)
     args, extra_args = parser.parse_known_args()
@@ -1420,15 +1543,21 @@ def main():
         if temp_dir_obj is not None
         else Path(args.output_dir).expanduser()
         if args.output_dir
-        else PROJECT_ROOT / "patient_logs" / session_id
+        else PROJECT_ROOT / "test_realistic_logs" / session_id
     )
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    blocks = make_blocks(args.trials_per_block)
+    condition_order = None
+    if args.conditions_file:
+        condition_order = _load_condition_order_from_csv(
+            Path(args.conditions_file), participant_id=args.participant, seed=args.seed
+        )
+    blocks = make_blocks(args.trials_per_block, condition_order=condition_order)
     ordered_blocks = counterbalanced_order(
         blocks,
         participant_id=args.participant,
         seed=args.seed,
+        technique_order_file=args.conditions_file,
     )
     block_count = len(ordered_blocks)
     total_trials = sum(block.trials for block in ordered_blocks)
@@ -1461,7 +1590,7 @@ def main():
         {
             "type": "session_start",
             "task": "realistic_screenshot_session",
-            "task_label": "patient_or_control_realistic_screenshot_task",
+            "task_label": "control_realistic_screenshot_task",
             "log_group": log_group_from_output_dir(output_dir),
             "output_dir": str(output_dir),
             "participant_id": args.participant,
@@ -1483,18 +1612,10 @@ def main():
     dataset = load_dataset(Path(args.data_dir))
     dataset_by_image = {str(item.image_path): item for item in dataset}
     session_screen = create_session_screen(windowed=args.windowed, language=args.language)
-    session_screen.show_content(
-        title="Experiment initialization" if is_english(args.language) else "Initialisation de l'expérience",
-        body=(
-            "Preparing the controlled session.\n"
-            "Loading techniques and experimental parameters..."
-            if is_english(args.language)
-            else "Préparation de la session contrôlée.\n"
-            "Chargement des techniques et des paramètres expérimentaux..."
-        ),
-        hint="Please wait." if is_english(args.language) else "Veuillez patienter.",
-        button_text=None,
-    )
+    # No "please wait" splash here: keep a blank backdrop up (Esc/Q still
+    # abort via the app-wide shortcut) while techniques preload, and let the
+    # first thing the participant sees be the calibration instructions.
+    session_screen.show_background_behind(clear_content=True)
     write_event(session_log, {"type": "initialization_start"})
 
     ninja_control_file = output_dir / "ninja_cursors.control"
@@ -1531,23 +1652,7 @@ def main():
                 app=app,
             )
             raise SystemExit(130)
-        if args.ninja_auto_calibrate:
-            session_screen.show_content(
-                title="Experiment initialization" if is_english(args.language) else "Initialisation de l'expérience",
-                body=(
-                    "Preparing eye tracking.\n"
-                    "Please wait while Ninja Cursors finishes initializing before calibration..."
-                    if is_english(args.language)
-                    else "Préparation du suivi du regard.\n"
-                    "Veuillez patienter pendant l'initialisation de Ninja Cursors avant la calibration..."
-                ),
-                hint=(
-                    "This step may take a few seconds depending on the machine."
-                    if is_english(args.language)
-                    else "Cette étape peut prendre quelques secondes selon la machine."
-                ),
-                button_text=None,
-            )
+        if args.ninja_auto_calibrate or getattr(args, "ninja_wait_ready", False):
             ninja_ready = wait_for_ninja_ready(
                 preloaded_processes,
                 session_log,
@@ -1584,95 +1689,34 @@ def main():
                     app=app,
                 )
                 raise SystemExit(1)
-            session_screen.show_content(
-                title="Eye-tracking calibration" if is_english(args.language) else "Calibration du regard",
-                body=(
-                    "Before the experiment starts, an eye-tracking calibration will be performed.\n"
-                    "Red points will appear one after another on the screen.\n"
-                    "Look at each red point without moving your head until the next point appears.\n"
-                    "After calibration, a screen will tell you that the experiment can begin."
-                    if is_english(args.language)
-                    else "Avant de commencer l'expérience, une calibration du regard va être effectuée.\n"
-                    "Des points rouges apparaîtront successivement à l'écran.\n"
-                    "Regardez chaque point rouge sans bouger la tête jusqu'au point suivant.\n"
-                    "Après la calibration, un écran vous indiquera que l'expérience peut commencer."
-                ),
-                hint="Click Start when you are ready." if is_english(args.language) else "Cliquez sur Commencer quand vous êtes prêt(e).",
-                button_text="Start calibration" if is_english(args.language) else "Commencer la calibration",
-            )
-            write_event(session_log, {"type": "calibration_instructions"})
-            if session_screen.wait_for_continue():
-                write_session_end("keyboard_escape_before_calibration")
-                cleanup_session_resources(
-                    preloaded_processes=preloaded_processes,
-                    session_log=session_log,
-                    ninja_control_file=ninja_control_file,
-                    session_screen=session_screen,
-                    app=app,
-                )
-                raise SystemExit(130)
-            max_calibration_attempts = 5
-            calibration_result = None
-            calibration_payload: dict = {}
-            for calibration_attempt in range(1, max_calibration_attempts + 1):
-                retry_suffix_en = f" (attempt {calibration_attempt}/{max_calibration_attempts})" if calibration_attempt > 1 else ""
-                retry_suffix_fr = f" (tentative {calibration_attempt}/{max_calibration_attempts})" if calibration_attempt > 1 else ""
+            if args.ninja_auto_calibrate:
+                # Only calibrate once for the whole comparative session: MAML
+                # adaptation fine-tunes the same model weights in place and
+                # accumulates prior calibration samples on every call
+                # (webeyetrack's adapt()), so recalibrating again in a later
+                # task compounds and visibly degrades accuracy instead of
+                # improving it. A later task without this flag skips straight
+                # to the blocks below and reuses the saved affine matrix via
+                # ninjacursors.py's own startup load.
                 session_screen.show_content(
-                    title=(
-                        f"Calibration in progress{retry_suffix_en}"
-                        if is_english(args.language)
-                        else f"Calibration en cours{retry_suffix_fr}"
-                    ),
+                    title="Eye-tracking calibration" if is_english(args.language) else "Calibration du regard",
                     body=(
-                        "Look at the red point displayed on the screen until calibration is finished."
+                        "Before the experiment starts, an eye-tracking calibration will be performed.\n"
+                        "Red points will appear one after another on the screen.\n"
+                        "Look at each red point without moving your head until the next point appears.\n"
+                        "After calibration, a screen will tell you that the experiment can begin."
                         if is_english(args.language)
-                        else "Regardez le point rouge affiché à l'écran jusqu'à la fin de la calibration."
+                        else "Avant de commencer l'expérience, une calibration du regard va être effectuée.\n"
+                        "Des points rouges apparaîtront successivement à l'écran.\n"
+                        "Regardez chaque point rouge sans bouger la tête jusqu'au point suivant.\n"
+                        "Après la calibration, un écran vous indiquera que l'expérience peut commencer."
                     ),
-                    hint=(
-                        "Do not click and avoid moving your head during this step."
-                        if is_english(args.language)
-                        else "Ne cliquez pas et évitez de bouger la tête pendant cette étape."
-                    ),
-                    button_text=None,
-                    level_offset=0,
+                    hint="Click Start when you are ready." if is_english(args.language) else "Cliquez sur Commencer quand vous êtes prêt(e).",
+                    button_text="Start calibration" if is_english(args.language) else "Commencer la calibration",
                 )
-                ninja_control_file.write_text("calibrate", encoding="utf-8")
-                write_event(session_log, {"type": "calibration_start_requested", "attempt": calibration_attempt})
-                calibration_result, calibration_payload = wait_for_initial_ninja_calibration(
-                    preloaded_processes,
-                    session_log,
-                    app=app,
-                    abort_check=lambda: bool(session_screen.aborted),
-                )
-                ninja_control_file.write_text("paused", encoding="utf-8")
-                if calibration_result != "failed":
-                    break
-                write_event(
-                    session_log,
-                    {"type": "calibration_attempt_failed", "attempt": calibration_attempt, **calibration_payload},
-                )
-                if calibration_attempt >= max_calibration_attempts:
-                    break
-                mean_error_px = calibration_payload.get("mean_error_px")
-                error_detail_en = f" Measured error: {mean_error_px:.0f}px." if isinstance(mean_error_px, (int, float)) else ""
-                error_detail_fr = f" Erreur mesurée : {mean_error_px:.0f}px." if isinstance(mean_error_px, (int, float)) else ""
-                session_screen.show_content(
-                    title="Calibration failed" if is_english(args.language) else "Calibration échouée",
-                    body=(
-                        f"The calibration error was too high.{error_detail_en} Let's try again.\n"
-                        "Sit closer to the screen, make sure your face is well lit, "
-                        "sit still, and look directly at each red point until it disappears."
-                        if is_english(args.language)
-                        else f"L'erreur de calibration était trop élevée.{error_detail_fr} Recommençons.\n"
-                        "Rapprochez-vous de l'écran, assurez-vous que votre visage est bien éclairé, "
-                        "restez immobile et regardez directement chaque point rouge jusqu'à ce qu'il disparaisse."
-                    ),
-                    hint="Click Retry when you are ready." if is_english(args.language) else "Cliquez sur Réessayer quand vous êtes prêt(e).",
-                    button_text="Retry calibration" if is_english(args.language) else "Réessayer la calibration",
-                )
-                write_event(session_log, {"type": "calibration_retry_instructions", "attempt": calibration_attempt + 1})
+                write_event(session_log, {"type": "calibration_instructions"})
                 if session_screen.wait_for_continue():
-                    write_session_end("keyboard_escape_during_calibration")
+                    write_session_end("keyboard_escape_before_calibration")
                     cleanup_session_resources(
                         preloaded_processes=preloaded_processes,
                         session_log=session_log,
@@ -1681,67 +1725,137 @@ def main():
                         app=app,
                     )
                     raise SystemExit(130)
-            if calibration_result in {"aborted", "cancelled", "failed"}:
-                write_session_end(
-                    "keyboard_escape_during_calibration"
-                    if calibration_result == "aborted"
-                    else (
-                        "ninja_calibration_failed"
-                        if calibration_result == "failed"
-                        else "calibration_cancelled"
+                max_calibration_attempts = 5
+                calibration_result = None
+                calibration_payload: dict = {}
+                for calibration_attempt in range(1, max_calibration_attempts + 1):
+                    retry_suffix_en = f" (attempt {calibration_attempt}/{max_calibration_attempts})" if calibration_attempt > 1 else ""
+                    retry_suffix_fr = f" (tentative {calibration_attempt}/{max_calibration_attempts})" if calibration_attempt > 1 else ""
+                    session_screen.show_content(
+                        title=(
+                            f"Calibration in progress{retry_suffix_en}"
+                            if is_english(args.language)
+                            else f"Calibration en cours{retry_suffix_fr}"
+                        ),
+                        body=(
+                            "Look at the red point displayed on the screen until calibration is finished."
+                            if is_english(args.language)
+                            else "Regardez le point rouge affiché à l'écran jusqu'à la fin de la calibration."
+                        ),
+                        hint=(
+                            "Do not click and avoid moving your head during this step."
+                            if is_english(args.language)
+                            else "Ne cliquez pas et évitez de bouger la tête pendant cette étape."
+                        ),
+                        button_text=None,
+                        level_offset=0,
                     )
+                    ninja_control_file.write_text("calibrate", encoding="utf-8")
+                    write_event(session_log, {"type": "calibration_start_requested", "attempt": calibration_attempt})
+                    calibration_result, calibration_payload = wait_for_initial_ninja_calibration(
+                        preloaded_processes,
+                        session_log,
+                        app=app,
+                        abort_check=lambda: bool(session_screen.aborted),
+                    )
+                    ninja_control_file.write_text("paused", encoding="utf-8")
+                    if calibration_result != "failed":
+                        break
+                    write_event(
+                        session_log,
+                        {"type": "calibration_attempt_failed", "attempt": calibration_attempt, **calibration_payload},
+                    )
+                    if calibration_attempt >= max_calibration_attempts:
+                        break
+                    mean_error_px = calibration_payload.get("mean_error_px")
+                    error_detail_en = f" Measured error: {mean_error_px:.0f}px." if isinstance(mean_error_px, (int, float)) else ""
+                    error_detail_fr = f" Erreur mesurée : {mean_error_px:.0f}px." if isinstance(mean_error_px, (int, float)) else ""
+                    session_screen.show_content(
+                        title="Calibration failed" if is_english(args.language) else "Calibration échouée",
+                        body=(
+                            f"The calibration error was too high.{error_detail_en} Let's try again.\n"
+                            "Sit closer to the screen, make sure your face is well lit, "
+                            "sit still, and look directly at each red point until it disappears."
+                            if is_english(args.language)
+                            else f"L'erreur de calibration était trop élevée.{error_detail_fr} Recommençons.\n"
+                            "Rapprochez-vous de l'écran, assurez-vous que votre visage est bien éclairé, "
+                            "restez immobile et regardez directement chaque point rouge jusqu'à ce qu'il disparaisse."
+                        ),
+                        hint="Click Retry when you are ready." if is_english(args.language) else "Cliquez sur Réessayer quand vous êtes prêt(e).",
+                        button_text="Retry calibration" if is_english(args.language) else "Réessayer la calibration",
+                    )
+                    write_event(session_log, {"type": "calibration_retry_instructions", "attempt": calibration_attempt + 1})
+                    if session_screen.wait_for_continue():
+                        write_session_end("keyboard_escape_during_calibration")
+                        cleanup_session_resources(
+                            preloaded_processes=preloaded_processes,
+                            session_log=session_log,
+                            ninja_control_file=ninja_control_file,
+                            session_screen=session_screen,
+                            app=app,
+                        )
+                        raise SystemExit(130)
+                if calibration_result in {"aborted", "cancelled", "failed"}:
+                    write_session_end(
+                        "keyboard_escape_during_calibration"
+                        if calibration_result == "aborted"
+                        else (
+                            "ninja_calibration_failed"
+                            if calibration_result == "failed"
+                            else "calibration_cancelled"
+                        )
+                    )
+                    cleanup_session_resources(
+                        preloaded_processes=preloaded_processes,
+                        session_log=session_log,
+                        ninja_control_file=ninja_control_file,
+                        session_screen=session_screen,
+                        app=app,
+                    )
+                    raise SystemExit(1 if calibration_result == "failed" else 130)
+                if calibration_result == "exited":
+                    write_session_end("ninja_exited_during_calibration")
+                    cleanup_session_resources(
+                        preloaded_processes=preloaded_processes,
+                        session_log=session_log,
+                        ninja_control_file=ninja_control_file,
+                        session_screen=session_screen,
+                        app=app,
+                    )
+                    raise SystemExit(130)
+                if calibration_result == "timeout":
+                    write_session_end("ninja_calibration_timeout")
+                    cleanup_session_resources(
+                        preloaded_processes=preloaded_processes,
+                        session_log=session_log,
+                        ninja_control_file=ninja_control_file,
+                        session_screen=session_screen,
+                        app=app,
+                    )
+                    raise SystemExit(1)
+                session_screen.show_content(
+                    title="Calibration complete" if is_english(args.language) else "Calibration terminée",
+                    body=(
+                        "The experiment will now begin.\n"
+                        "You will select the highlighted targets on screen using the different techniques."
+                        if is_english(args.language)
+                        else "L'expérience va maintenant commencer.\n"
+                        "Vous allez sélectionner les cibles indiquées à l'écran avec les différentes techniques."
+                    ),
+                    hint="Click Start when you are ready." if is_english(args.language) else "Cliquez sur Commencer quand vous êtes prêt(e).",
+                    button_text="Start experiment" if is_english(args.language) else "Commencer l'expérience",
                 )
-                cleanup_session_resources(
-                    preloaded_processes=preloaded_processes,
-                    session_log=session_log,
-                    ninja_control_file=ninja_control_file,
-                    session_screen=session_screen,
-                    app=app,
-                )
-                raise SystemExit(1 if calibration_result == "failed" else 130)
-            if calibration_result == "exited":
-                write_session_end("ninja_exited_during_calibration")
-                cleanup_session_resources(
-                    preloaded_processes=preloaded_processes,
-                    session_log=session_log,
-                    ninja_control_file=ninja_control_file,
-                    session_screen=session_screen,
-                    app=app,
-                )
-                raise SystemExit(130)
-            if calibration_result == "timeout":
-                write_session_end("ninja_calibration_timeout")
-                cleanup_session_resources(
-                    preloaded_processes=preloaded_processes,
-                    session_log=session_log,
-                    ninja_control_file=ninja_control_file,
-                    session_screen=session_screen,
-                    app=app,
-                )
-                raise SystemExit(1)
-            session_screen.show_content(
-                title="Calibration complete" if is_english(args.language) else "Calibration terminée",
-                body=(
-                    "The experiment will now begin.\n"
-                    "You will select the highlighted targets on screen using the different techniques."
-                    if is_english(args.language)
-                    else "L'expérience va maintenant commencer.\n"
-                    "Vous allez sélectionner les cibles indiquées à l'écran avec les différentes techniques."
-                ),
-                hint="Click Start when you are ready." if is_english(args.language) else "Cliquez sur Commencer quand vous êtes prêt(e).",
-                button_text="Start experiment" if is_english(args.language) else "Commencer l'expérience",
-            )
-            write_event(session_log, {"type": "experiment_start_instructions"})
-            if session_screen.wait_for_continue():
-                write_session_end("keyboard_escape_before_first_block")
-                cleanup_session_resources(
-                    preloaded_processes=preloaded_processes,
-                    session_log=session_log,
-                    ninja_control_file=ninja_control_file,
-                    session_screen=session_screen,
-                    app=app,
-                )
-                raise SystemExit(130)
+                write_event(session_log, {"type": "experiment_start_instructions"})
+                if session_screen.wait_for_continue():
+                    write_session_end("keyboard_escape_before_first_block")
+                    cleanup_session_resources(
+                        preloaded_processes=preloaded_processes,
+                        session_log=session_log,
+                        ninja_control_file=ninja_control_file,
+                        session_screen=session_screen,
+                        app=app,
+                    )
+                    raise SystemExit(130)
     write_event(session_log, {"type": "initialization_end"})
 
     if ordered_blocks and ordered_blocks[0].technique == "ninja_cursors":
