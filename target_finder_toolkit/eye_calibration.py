@@ -50,7 +50,7 @@ class EyeCalibration:
         ],
     }
 
-    # Calibration must be shared by standalone Ninja, tester tasks, and full
+    # Calibration must be shared by standalone Rake, tester tasks, and full
     # experiments. Keep it outside project logs/output directories.
     SAVE_DIR = pathlib.Path.home() / ".target_finder_toolkit" / "eye_calibration"
     LAST_SUCCESS_FILENAME = "last_calibration.json"
@@ -266,7 +266,7 @@ class EyeCalibration:
             "gaze_offset_x": 0.0,
             "gaze_offset_y": 0.0,
             "affine_matrix": m.tolist(),
-            "ninja_affine_matrix": m.tolist(),
+            "rake_affine_matrix": m.tolist(),
         }
         self._diagnostics = diagnostics
 
@@ -369,14 +369,14 @@ class EyeCalibration:
         if m.shape != (2, 3) or not np.all(np.isfinite(m)):
             raise RuntimeError(f"Invalid affine calibration matrix: shape={m.shape}")
 
-        # Ninja applies the full affine matrix itself at runtime.  The
+        # Rake applies the full affine matrix itself at runtime.  The
         # editable gain/offset fields remain available as an extra manual
         # fine-tuning layer after affine calibration, so keep them neutral.
         gain_x, offset_x_norm = self._extract_axis_manual_correction(m, raw_pogs, 0)
         gain_y, offset_y_norm = self._extract_axis_manual_correction(m, raw_pogs, 1)
         offset_x_px = float(offset_x_norm * self.screen_w)
         offset_y_px = float(offset_y_norm * self.screen_h)
-        print(f"[calib] affine matrix (Ninja runtime calibration):\n{m}")
+        print(f"[calib] affine matrix (Rake runtime calibration):\n{m}")
         print(
             f"[calib] manual-equivalent fit for diagnostics only: "
             f"gain=({gain_x:.3f}, {gain_y:.3f}) "
@@ -622,12 +622,12 @@ class EyeCalibration:
         }
 
     def _max_accepted_affine_error_px(self):
-        half_ninja_column_gap_px = float(self.screen_w) * 0.125
-        return half_ninja_column_gap_px * self.MAX_ACCEPTED_AFFINE_ERROR_FRACTION_OF_HALF_COLUMN
+        half_rake_column_gap_px = float(self.screen_w) * 0.125
+        return half_rake_column_gap_px * self.MAX_ACCEPTED_AFFINE_ERROR_FRACTION_OF_HALF_COLUMN
 
     def _max_accepted_point_error_px(self):
-        half_ninja_column_gap_px = float(self.screen_w) * 0.125
-        return half_ninja_column_gap_px * self.MAX_ACCEPTED_POINT_ERROR_FRACTION_OF_HALF_COLUMN
+        half_rake_column_gap_px = float(self.screen_w) * 0.125
+        return half_rake_column_gap_px * self.MAX_ACCEPTED_POINT_ERROR_FRACTION_OF_HALF_COLUMN
 
     def _save_result(
         self,
@@ -642,7 +642,7 @@ class EyeCalibration:
         data = {
             "num_points": self._num_points,
             "mean_error_px": mean_error_px,
-            "error_model": "ninja_affine",
+            "error_model": "rake_affine",
             "manual_mean_error_px": manual_mean_error_px,
             "screen_w": self.screen_w,
             "screen_h": self.screen_h,

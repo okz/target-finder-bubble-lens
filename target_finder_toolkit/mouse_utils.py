@@ -222,7 +222,7 @@ else:
 
             _CURSOR_HIDDEN only tracks whether *this* process called
             hide_cursor_everywhere(). The cursor is often actually hidden by
-            a different process (e.g. the Ninja Cursors technique
+            a different process (e.g. the Rake Cursor technique
             subprocess); if that process crashes instead of exiting
             gracefully, its cleanup code never runs and the cursor can stay
             hidden. A supervising process (the control panel) needs to be

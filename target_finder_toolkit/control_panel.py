@@ -20,7 +20,7 @@ from target_finder_toolkit.filters import (
 from target_finder_toolkit.logging_utils import make_default_log_path
 from target_finder_toolkit.mouse_utils import force_restore_cursor_visibility
 from target_finder_toolkit.webeyetrack_compat import patch_webeyetrack_dataclass_defaults
-from target_finder_toolkit.window_utils import install_qt_crash_guard
+from target_finder_toolkit.window_utils import activate_process_by_pid, install_qt_crash_guard
 from target_finder_toolkit.windows_process_utils import (
     attach_windows_kill_on_close_job,
     close_windows_process_job,
@@ -61,8 +61,8 @@ MODE_OPTIONS = {
         "French": "DynaSpot",
     },
     "rake": {
-        "English": "Ninja Cursors(gaze)",
-        "French": "Ninja Cursors(gaze)",
+        "English": "Rake Cursor(gaze)",
+        "French": "Rake Cursor(gaze)",
     },
 }
 
@@ -98,7 +98,7 @@ DEFAULT_RAKE_GAZE_OFFSET_X = -40.0
 DEFAULT_RAKE_GAZE_OFFSET_Y = -50.0
 DEFAULT_RAKE_SELECTION_HOLD = 2.0
 DEFAULT_RAKE_LOCK_ON_DWELL = False
-DEFAULT_RAKE_LOCK_ON_KEY = False
+DEFAULT_RAKE_LOCK_ON_KEY = True
 DEFAULT_RAKE_USE_CALIBRATION = True
 DEFAULT_RAKE_CALIB_POINTS = 13
 DEFAULT_RAKE_AUTO_CALIBRATE = False
@@ -159,7 +159,7 @@ UI_TEXTS = {
         "usage_test": "Test a technique",
         "usage_test_desc": "Free test/demo mode. Choose one technique, adjust parameters, then start it.",
         "usage_baseline": "Three qualitative tasks",
-        "usage_baseline_desc": "Qualitative sequence: standard mouse without filter on the three tasks, standard mouse with 1€ filter on the three tasks, Bubble Cursor on tasks 1 and 3, Semantic Pointing on tasks 1 and 3, then Ninja Cursors on the three tasks.",
+        "usage_baseline_desc": "Qualitative sequence: standard mouse without filter on the three tasks, standard mouse with 1€ filter on the three tasks, Bubble Cursor on tasks 1 and 3, Semantic Pointing on tasks 1 and 3, then Rake Cursor on the three tasks.",
         "usage_experiment": "Run an experiment",
         "usage_experiment_desc": "Controlled experiment mode. Choose either separate testing of the two control tasks or the complete control protocol.",
         "usage_choose_first": "Choose a usage mode first.",
@@ -170,10 +170,10 @@ UI_TEXTS = {
         "experiment_options_section": "Experimental task options",
         "semantic_section": "Semantic Pointing options",
         "dynaspot_section": "DynaSpot options",
-        "rake_section": "Ninja Cursors(gaze) options",
+        "rake_section": "Rake Cursor(gaze) options",
         "rake_device_section": "Device / environment parameters",
         "rake_device_section_note": "These usually do not need frequent changes; just confirm they are correct.",
-        "rake_cursor_section": "Ninja cursor parameters",
+        "rake_cursor_section": "Rake cursor parameters",
         "rake_calibration_params_section": "Calibration parameters",
         "rake_selection_section": "Selection / display / detection parameters",
         "rake_selection_section_note": "These control how the cursor is selected, what is displayed, and whether TargetFinder is used.",
@@ -203,7 +203,7 @@ UI_TEXTS = {
         "mode_bubble": "Bubble Cursor",
         "mode_semantic": "Semantic Pointing",
         "mode_dynaspot": "DynaSpot",
-        "mode_rake": "Ninja Cursors(gaze)",
+        "mode_rake": "Rake Cursor(gaze)",
         "baseline_participant_id": "Baseline participant ID (default: P01)",
         "baseline_participant_id_desc": "Identifier written in the qualitative normal-mouse baseline log.",
         "baseline_trials_per_task": "Baseline trials per task (range: 1-20, default: 5)",
@@ -222,24 +222,24 @@ UI_TEXTS = {
         "dynaspot_lag_desc": "Delay before the spot starts shrinking once the pointer stops moving.",
         "dynaspot_reduce_time": "DynaSpot reduce time (range: 0.001-10.0, default: 0.500)",
         "dynaspot_reduce_time_desc": "Time used for the co-exponential reduction back toward a 1-pixel point cursor.",
-        "rake_params": "Ninja Cursors(gaze) tuning",
+        "rake_params": "Rake Cursor(gaze) tuning",
         "rake_camera_index": "Webcam index (range: 0-10, default: 0)",
         "rake_camera_index_desc": "Camera index used by WebEyeTrack for webcam-based gaze estimation.",
         "rake_screen_width_cm": "Screen width (cm) (range: 10.0-200.0, default: auto-detected current screen)",
         "rake_screen_width_cm_desc": "Auto-detected physical screen width used by WebEyeTrack. You can override it if detection is wrong.",
         "rake_screen_height_cm": "Screen height (cm) (range: 10.0-200.0, default: auto-detected current screen)",
         "rake_screen_height_cm_desc": "Auto-detected physical screen height used by WebEyeTrack. You can override it if detection is wrong.",
-        "rake_spacing": "Ninja spacing (range: 80.0-800.0, default: 350.0)",
+        "rake_spacing": "Rake spacing (range: 80.0-800.0, default: 350.0)",
         "rake_spacing_desc": "Controls how widely the 8 cursors are spread. Lower = cursors closer together. Higher = cursors farther apart. The default reproduces the paper-style 4x2 layout.",
         "rake_gaze_smoothing": "Gaze smoothing (range: 0.0-0.95, default: 0.35)",
         "rake_gaze_smoothing_desc": "Per frame, the system keeps this fraction of the previous gaze point and uses the rest from the new webcam sample. Higher = steadier but more lag.",
         "rake_calibration_section": "Calibration",
         "rake_use_calibration": "Use calibration (range: off/on, default: on)",
-        "rake_use_calibration_desc": "Runs gaze calibration before Ninja Cursors starts. The resulting correction values fill the editable gain/offset fields.",
+        "rake_use_calibration_desc": "Runs gaze calibration before Rake Cursor starts. The resulting correction values fill the editable gain/offset fields.",
         "rake_calibration_points": "Calibration points (choices: 5/9/13, default: 13)",
         "rake_calibration_points_desc": "Number of points used during multi-point calibration. More points usually improve accuracy but take longer.",
         "rake_calibration_actions": "Calibration actions",
-        "rake_calibration_actions_desc": "When calibration is enabled, Start / Apply launches Ninja Cursors(gaze), begins calibration automatically, and fills the correction fields when done.",
+        "rake_calibration_actions_desc": "When calibration is enabled, Start / Apply launches Rake Cursor(gaze), begins calibration automatically, and fills the correction fields when done.",
         "rake_calibration_status": "Calibration status",
         "rake_calibration_status_desc": "Current calibration state used by the panel.",
         "rake_calibration_status_not_calibrated": "Not calibrated",
@@ -249,7 +249,7 @@ UI_TEXTS = {
         "rake_calibration_status_cancelled": "Calibration cancelled",
         "rake_calibration_status_last_applied": "Last calibration applied",
         "rake_calibration_mode": "Correction mode",
-        "rake_calibration_mode_desc": "Shows whether Ninja Cursors(gaze) is currently using manual correction or calibration mode.",
+        "rake_calibration_mode_desc": "Shows whether Rake Cursor(gaze) is currently using manual correction or calibration mode.",
         "rake_calibration_mode_manual": "Manual correction mode",
         "rake_calibration_mode_active": "Calibration mode",
         "rake_reset_calibration": "Reset calibration",
@@ -263,18 +263,18 @@ UI_TEXTS = {
         "rake_gaze_offset_y_desc": "Shifts the gaze estimate vertically before selecting the active cursor. Positive = move down, negative = move up.",
         "rake_lock_on_dwell": "Lock cursor by gaze dwell (range: off/on, default: off)",
         "rake_lock_on_dwell_desc": "When enabled, gaze must stay on the same cursor before it locks. When disabled, the current orange cursor can be clicked immediately.",
-        "rake_lock_on_key": "Lock cursor with spacebar (range: off/on, default: off)",
+        "rake_lock_on_key": "Lock cursor with spacebar (range: off/on, default: on)",
         "rake_lock_on_key_desc": "When enabled, press spacebar to lock the current orange cursor (it turns green) before clicking it. An alternative to gaze-dwell locking that avoids relying on gaze stability.",
         "rake_selection_hold": "Gaze dwell lock time (range: 0.0-5.0, default: 2.0)",
         "rake_selection_hold_desc": "Seconds the gaze must stay on the same cursor before it locks automatically. Used only when dwell locking is enabled.",
-        "rake_show_gaze": "Show gaze point (Ninja only, range: off/on, default: off)",
+        "rake_show_gaze": "Show gaze point (Rake only, range: off/on, default: off)",
         "rake_show_gaze_desc": "Shows the red real-time gaze marker estimated from the webcam. Keep it off during tests unless you need calibration feedback.",
         "rake_show_debug_status": "Show gaze tracking status bar (range: off/on, default: off)",
-        "rake_show_debug_status_desc": "Shows the black real-time Ninja tracking status bar in the upper-left corner. Keep it off during tests unless debugging gaze tracking.",
-        "rake_snap_system_cursor": "Move system cursor to active Ninja cursor (range: off/on, default: on)",
-        "rake_snap_system_cursor_desc": "Moves the native macOS cursor to the active orange Ninja cursor, reducing the mismatch caused when macOS reveals the real cursor after clicks.",
+        "rake_show_debug_status_desc": "Shows the black real-time Rake tracking status bar in the upper-left corner. Keep it off during tests unless debugging gaze tracking.",
+        "rake_snap_system_cursor": "Move system cursor to active Rake cursor (range: off/on, default: on)",
+        "rake_snap_system_cursor_desc": "Moves the native macOS cursor to the active orange Rake cursor, reducing the mismatch caused when macOS reveals the real cursor after clicks.",
         "rake_without_targetfinder": "Without TargetFinder (range: off/on, default: on)",
-        "rake_without_targetfinder_desc": "Runs Ninja Cursors(gaze) without detection, target highlighting, or model inference. Only gaze-based cursor selection and redirected clicks remain active.",
+        "rake_without_targetfinder_desc": "Runs Rake Cursor(gaze) without detection, target highlighting, or model inference. Only gaze-based cursor selection and redirected clicks remain active.",
         "experiment_section": "Experimental task",
         "experiment_enabled": "Run experimental task (range: off/on, default: off)",
         "experiment_enabled_desc": "When enabled, Start / Apply launches a controlled experimental task instead of a free demo.",
@@ -294,7 +294,7 @@ UI_TEXTS = {
         "experiment_task_type": "Experimental task type (default: realistic screenshots)",
         "experiment_task_type_desc": "Choose realistic screenshots, synthetic Fitts-with-distractors, or the healthy-participant comparative protocol that runs both tasks.",
         "experiment_session_enabled": "Run full experimental session (range: off/on, default: off)",
-        "experiment_session_enabled_desc": "If enabled, Start / Apply runs the full task blocks: Standard Mouse, Bubble, DynaSpot, Semantic Pointing, and Ninja Cursors over all 12 ID × rho conditions.",
+        "experiment_session_enabled_desc": "If enabled, Start / Apply runs the full task blocks: Standard Mouse, Bubble, DynaSpot, Semantic Pointing, and Rake Cursor over all 12 ID × rho conditions.",
         "experiment_participant_id": "Participant ID (default: P01)",
         "experiment_participant_id_desc": "Identifier written in the session log and used to select one Balanced Latin Square block order.",
         "experiment_data_dir": "Dataset folder (default: stage/data/web)",
@@ -337,7 +337,7 @@ UI_TEXTS = {
         "disable_accel": "Disable system mouse acceleration (semantic only, range: off/on, default: off)",
         "disable_accel_short": "Disable system mouse acceleration",
         "disable_accel_desc": "Makes semantic pointing feel more stable, but changes mouse behavior while running.",
-        "mode_note": "Standard Mouse: uses the normal system cursor without target-aware assistance; the optional pointer filter is controlled by the filter selector. TargetFinder Overlay: shows detected boxes for testing. Bubble Cursor: expands selection around the nearest target. Semantic Pointing: slows pointer movement near targets for easier aiming. DynaSpot: keeps the normal system cursor as the center and grows a circular activation area with speed while preserving empty-space clicks. Ninja Cursors(gaze): gaze first activates the nearest cursor among 8 distributed cursors; if the gaze stays there long enough, that cursor locks automatically for local refinement until the click finishes.",
+        "mode_note": "Standard Mouse: uses the normal system cursor without target-aware assistance; the optional pointer filter is controlled by the filter selector. TargetFinder Overlay: shows detected boxes for testing. Bubble Cursor: expands selection around the nearest target. Semantic Pointing: slows pointer movement near targets for easier aiming. DynaSpot: keeps the normal system cursor as the center and grows a circular activation area with speed while preserving empty-space clicks. Rake Cursor(gaze): gaze first activates the nearest cursor among 8 distributed cursors; if the gaze stays there long enough, that cursor locks automatically for local refinement until the click finishes.",
         "contrast": "Contrast",
         "enable_tts": "Enable TTS",
         "language": "Language",
@@ -357,7 +357,7 @@ UI_TEXTS = {
         "running_baseline": "Qualitative task sequence is running.",
         "running_mouse_filter": "Standard Mouse is running.",
         "running_dynaspot": "DynaSpot is running.",
-        "running_rake": "Ninja Cursors(gaze) is running.",
+        "running_rake": "Rake Cursor(gaze) is running.",
         "running_experiment": "Experimental task is running.",
         "running_experiment_session": "Experimental session is running.",
         "stopped": "Stopped the running mode.",
@@ -390,7 +390,7 @@ UI_TEXTS = {
         "usage_test": "Tester une technique",
         "usage_test_desc": "Mode test/démo libre. Choisissez une technique, ajustez les paramètres, puis lancez-la.",
         "usage_baseline": "Trois tâches qualitatives",
-        "usage_baseline_desc": "Séquence qualitative : souris standard sans filtre sur les trois tâches, souris standard avec filtre 1€ sur les trois tâches, Bubble Cursor sur les tâches 1 et 3, pointage sémantique sur les tâches 1 et 3, puis Ninja Cursors sur les trois tâches.",
+        "usage_baseline_desc": "Séquence qualitative : souris standard sans filtre sur les trois tâches, souris standard avec filtre 1€ sur les trois tâches, Bubble Cursor sur les tâches 1 et 3, pointage sémantique sur les tâches 1 et 3, puis Rake Cursor sur les trois tâches.",
         "usage_experiment": "Lancer une expérience",
         "usage_experiment_desc": "Mode expérimental contrôlé. Choisissez soit le test séparé des deux tâches contrôle, soit le protocole contrôle complet.",
         "usage_choose_first": "Choisissez d’abord un mode d’utilisation.",
@@ -401,10 +401,10 @@ UI_TEXTS = {
         "experiment_options_section": "Options de la tâche expérimentale",
         "semantic_section": "Options du pointage sémantique",
         "dynaspot_section": "Options de DynaSpot",
-        "rake_section": "Options de Ninja Cursors(gaze)",
+        "rake_section": "Options de Rake Cursor(gaze)",
         "rake_device_section": "Paramètres appareil / environnement",
         "rake_device_section_note": "Ces paramètres n’ont généralement pas besoin d’être modifiés souvent ; il faut surtout vérifier qu’ils sont corrects.",
-        "rake_cursor_section": "Paramètres des curseurs Ninja",
+        "rake_cursor_section": "Paramètres des curseurs Rake",
         "rake_calibration_params_section": "Paramètres de calibration",
         "rake_selection_section": "Paramètres de sélection / affichage / détection",
         "rake_selection_section_note": "Ces paramètres contrôlent comment le curseur est sélectionné, ce qui est affiché, et si TargetFinder est utilisé.",
@@ -434,7 +434,7 @@ UI_TEXTS = {
         "mode_bubble": "Bubble Cursor",
         "mode_semantic": "Pointage sémantique",
         "mode_dynaspot": "DynaSpot",
-        "mode_rake": "Ninja Cursors(gaze)",
+        "mode_rake": "Rake Cursor(gaze)",
         "baseline_participant_id": "Identifiant participant baseline (défaut : P01)",
         "baseline_participant_id_desc": "Identifiant enregistré dans le journal qualitatif de la baseline souris standard.",
         "baseline_trials_per_task": "Essais baseline par tâche (plage : 1-20, défaut : 5)",
@@ -453,24 +453,24 @@ UI_TEXTS = {
         "dynaspot_lag_desc": "Temps d’attente avant que le spot commence à diminuer lorsque le pointeur s’arrête.",
         "dynaspot_reduce_time": "Temps de réduction DynaSpot (plage : 0.001-10.0, défaut : 0.500)",
         "dynaspot_reduce_time_desc": "Durée de la réduction co-exponentielle pour revenir vers un curseur ponctuel de 1 pixel.",
-        "rake_params": "Réglages Ninja Cursors(gaze)",
+        "rake_params": "Réglages Rake Cursor(gaze)",
         "rake_camera_index": "Index de webcam (plage : 0-10, défaut : 0)",
         "rake_camera_index_desc": "Index de la caméra utilisée par WebEyeTrack pour estimer le regard.",
         "rake_screen_width_cm": "Largeur écran (cm) (plage : 10.0-200.0, défaut : écran courant détecté automatiquement)",
         "rake_screen_width_cm_desc": "Largeur physique de l’écran détectée automatiquement et utilisée par WebEyeTrack. Vous pouvez la corriger si la détection est incorrecte.",
         "rake_screen_height_cm": "Hauteur écran (cm) (plage : 10.0-200.0, défaut : écran courant détecté automatiquement)",
         "rake_screen_height_cm_desc": "Hauteur physique de l’écran détectée automatiquement et utilisée par WebEyeTrack. Vous pouvez la corriger si la détection est incorrecte.",
-        "rake_spacing": "Espacement Ninja (plage : 80.0-800.0, défaut : 350.0)",
+        "rake_spacing": "Espacement Rake (plage : 80.0-800.0, défaut : 350.0)",
         "rake_spacing_desc": "Contrôle à quel point les 8 curseurs sont espacés. Plus bas = plus rapprochés. Plus haut = plus éloignés. La valeur par défaut reproduit la disposition 4x2 de l’article.",
         "rake_gaze_smoothing": "Lissage du regard (plage : 0.0-0.95, défaut : 0.35)",
         "rake_gaze_smoothing_desc": "À chaque frame, le système garde cette fraction de l’ancien point de regard et prend le reste depuis la nouvelle mesure webcam. Plus haut = plus stable mais plus de retard.",
         "rake_calibration_section": "Calibration",
         "rake_use_calibration": "Utiliser la calibration (plage : off/on, défaut : on)",
-        "rake_use_calibration_desc": "Lance une calibration du regard avant Ninja Cursors. Les corrections obtenues remplissent les champs gain/décalage, qui restent modifiables.",
+        "rake_use_calibration_desc": "Lance une calibration du regard avant Rake Cursor. Les corrections obtenues remplissent les champs gain/décalage, qui restent modifiables.",
         "rake_calibration_points": "Points de calibration (choix : 5/9/13, défaut : 13)",
         "rake_calibration_points_desc": "Nombre de points utilisés pendant la calibration multipoint. Davantage de points améliore souvent la précision mais prend plus de temps.",
         "rake_calibration_actions": "Actions de calibration",
-        "rake_calibration_actions_desc": "Quand la calibration est activée, Démarrer / Appliquer lance Ninja Cursors(gaze), démarre automatiquement la calibration et remplit les champs de correction.",
+        "rake_calibration_actions_desc": "Quand la calibration est activée, Démarrer / Appliquer lance Rake Cursor(gaze), démarre automatiquement la calibration et remplit les champs de correction.",
         "rake_calibration_status": "État de calibration",
         "rake_calibration_status_desc": "État actuel de calibration utilisé par le panneau.",
         "rake_calibration_status_not_calibrated": "Non calibré",
@@ -480,7 +480,7 @@ UI_TEXTS = {
         "rake_calibration_status_cancelled": "Calibration annulée",
         "rake_calibration_status_last_applied": "Dernière calibration appliquée",
         "rake_calibration_mode": "Mode de correction",
-        "rake_calibration_mode_desc": "Indique si Ninja Cursors(gaze) utilise actuellement le mode manuel ou le mode calibration.",
+        "rake_calibration_mode_desc": "Indique si Rake Cursor(gaze) utilise actuellement le mode manuel ou le mode calibration.",
         "rake_calibration_mode_manual": "Mode de correction manuelle",
         "rake_calibration_mode_active": "Mode calibration",
         "rake_reset_calibration": "Réinitialiser la calibration",
@@ -494,18 +494,18 @@ UI_TEXTS = {
         "rake_gaze_offset_y_desc": "Décale l’estimation du regard verticalement avant de choisir le curseur actif. Positif = vers le bas, négatif = vers le haut.",
         "rake_lock_on_dwell": "Verrouiller par fixation du regard (plage : off/on, défaut : off)",
         "rake_lock_on_dwell_desc": "Si activé, le regard doit rester sur le même curseur avant verrouillage. Sinon, le curseur orange courant peut être cliqué immédiatement.",
-        "rake_lock_on_key": "Verrouiller avec la barre d’espace (plage : off/on, défaut : off)",
+        "rake_lock_on_key": "Verrouiller avec la barre d’espace (plage : off/on, défaut : on)",
         "rake_lock_on_key_desc": "Si activé, appuyez sur la barre d’espace pour verrouiller le curseur orange courant (il devient vert) avant de cliquer dessus. Une alternative au verrouillage par fixation du regard qui ne dépend pas de la stabilité du regard.",
         "rake_selection_hold": "Temps de verrouillage par fixation du regard (plage : 0.0-5.0, défaut : 2.0)",
         "rake_selection_hold_desc": "Durée pendant laquelle le regard doit rester sur le même curseur avant qu’il se verrouille automatiquement. Utilisé seulement si le verrouillage est activé.",
-        "rake_show_gaze": "Afficher le point de regard (Ninja uniquement, plage : off/on, défaut : off)",
+        "rake_show_gaze": "Afficher le point de regard (Rake uniquement, plage : off/on, défaut : off)",
         "rake_show_gaze_desc": "Affiche le marqueur rouge du regard estimé en temps réel par la webcam. À laisser désactivé pendant les tests sauf pour vérifier la calibration.",
         "rake_show_debug_status": "Afficher la barre de suivi du regard (plage : off/on, défaut : off)",
-        "rake_show_debug_status_desc": "Affiche la barre noire de statut Ninja en temps réel en haut à gauche. À laisser désactivé pendant les tests sauf pour déboguer le suivi du regard.",
-        "rake_snap_system_cursor": "Déplacer le curseur système vers le curseur Ninja actif (plage : off/on, défaut : on)",
-        "rake_snap_system_cursor_desc": "Déplace le curseur macOS natif vers le curseur Ninja orange actif, afin de réduire le décalage visuel lorsque macOS réaffiche le vrai curseur après un clic.",
+        "rake_show_debug_status_desc": "Affiche la barre noire de statut Rake en temps réel en haut à gauche. À laisser désactivé pendant les tests sauf pour déboguer le suivi du regard.",
+        "rake_snap_system_cursor": "Déplacer le curseur système vers le curseur Rake actif (plage : off/on, défaut : on)",
+        "rake_snap_system_cursor_desc": "Déplace le curseur macOS natif vers le curseur Rake orange actif, afin de réduire le décalage visuel lorsque macOS réaffiche le vrai curseur après un clic.",
         "rake_without_targetfinder": "Sans TargetFinder (plage : off/on, défaut : on)",
-        "rake_without_targetfinder_desc": "Lance Ninja Cursors(gaze) sans détection, sans surbrillance de cible et sans inférence du modèle. Seuls la sélection du curseur par le regard et les clics redirigés restent actifs.",
+        "rake_without_targetfinder_desc": "Lance Rake Cursor(gaze) sans détection, sans surbrillance de cible et sans inférence du modèle. Seuls la sélection du curseur par le regard et les clics redirigés restent actifs.",
         "experiment_section": "Tâche expérimentale",
         "experiment_enabled": "Lancer la tâche expérimentale (plage : off/on, défaut : off)",
         "experiment_enabled_desc": "Si activé, Démarrer / Appliquer lance une tâche expérimentale contrôlée au lieu d’une démo libre.",
@@ -525,7 +525,7 @@ UI_TEXTS = {
         "experiment_task_type": "Type de tâche expérimentale (défaut : captures réalistes)",
         "experiment_task_type_desc": "Choisir les captures réalistes, la tâche synthétique de Fitts avec distracteurs, ou le protocole comparatif pour participants sans troubles moteurs qui lance les deux tâches.",
         "experiment_session_enabled": "Lancer une session expérimentale complète (plage : off/on, défaut : off)",
-        "experiment_session_enabled_desc": "Si activé, Démarrer / Appliquer lance automatiquement les blocs de la tâche complète : souris standard, Bubble, DynaSpot, Pointage sémantique et Ninja Cursors sur les 12 conditions ID × rho.",
+        "experiment_session_enabled_desc": "Si activé, Démarrer / Appliquer lance automatiquement les blocs de la tâche complète : souris standard, Bubble, DynaSpot, Pointage sémantique et Rake Cursor sur les 12 conditions ID × rho.",
         "experiment_participant_id": "Identifiant participant (défaut : P01)",
         "experiment_participant_id_desc": "Identifiant enregistré dans le journal de session et utilisé pour sélectionner un ordre de blocs dans le carré latin équilibré.",
         "experiment_data_dir": "Dossier du jeu de données (défaut : stage/data/web)",
@@ -568,7 +568,7 @@ UI_TEXTS = {
         "disable_accel": "Désactiver l'accélération de la souris (sémantique uniquement, plage : off/on, défaut : off)",
         "disable_accel_short": "Désactiver l'accélération de la souris",
         "disable_accel_desc": "Rend le pointage sémantique plus stable, mais change la sensation de la souris pendant l'exécution.",
-        "mode_note": "Souris standard : utilise le curseur système normal sans assistance dépendante des cibles ; le filtre optionnel est contrôlé par le sélecteur de filtre. Overlay TargetFinder : affiche les boîtes détectées pour les tests. Bubble Cursor : agrandit la sélection autour de la cible la plus proche. Pointage sémantique : ralentit le pointeur près des cibles pour mieux viser. DynaSpot : garde le curseur système normal comme centre et agrandit une zone d’activation circulaire avec la vitesse tout en préservant les clics dans l’espace vide. Ninja Cursors(gaze) : le regard active d’abord le curseur le plus proche parmi 8 curseurs répartis ; si le regard y reste assez longtemps, ce curseur se verrouille automatiquement pour le micro-ajustement jusqu’au clic.",
+        "mode_note": "Souris standard : utilise le curseur système normal sans assistance dépendante des cibles ; le filtre optionnel est contrôlé par le sélecteur de filtre. Overlay TargetFinder : affiche les boîtes détectées pour les tests. Bubble Cursor : agrandit la sélection autour de la cible la plus proche. Pointage sémantique : ralentit le pointeur près des cibles pour mieux viser. DynaSpot : garde le curseur système normal comme centre et agrandit une zone d’activation circulaire avec la vitesse tout en préservant les clics dans l’espace vide. Rake Cursor(gaze) : le regard active d’abord le curseur le plus proche parmi 8 curseurs répartis ; si le regard y reste assez longtemps, ce curseur se verrouille automatiquement pour le micro-ajustement jusqu’au clic.",
         "contrast": "Contrast",
         "enable_tts": "Activer la synthèse vocale",
         "language": "Langue",
@@ -588,7 +588,7 @@ UI_TEXTS = {
         "running_baseline": "La sequence de taches qualitatives est en cours.",
         "running_mouse_filter": "Souris standard est en cours.",
         "running_dynaspot": "DynaSpot est en cours.",
-        "running_rake": "Ninja Cursors(gaze) est en cours.",
+        "running_rake": "Rake Cursor(gaze) est en cours.",
         "running_experiment": "La tâche expérimentale est en cours.",
         "running_experiment_session": "La session expérimentale est en cours.",
         "stopped": "Le mode en cours a été arrêté.",
@@ -986,22 +986,22 @@ class ControlPanel(QtWidgets.QWidget):
             layout.addWidget(row)
         return group
 
-    def _create_ninja_option_group(self, title_key: str, rows, note_key: str | None = None):
+    def _create_rake_option_group(self, title_key: str, rows, note_key: str | None = None):
         group = QtWidgets.QFrame()
-        group.setObjectName("NinjaOptionGroup")
+        group.setObjectName("RakeOptionGroup")
         layout = QtWidgets.QVBoxLayout(group)
         layout.setContentsMargins(18, 16, 18, 16)
         layout.setSpacing(0)
 
         title = QtWidgets.QLabel()
-        title.setObjectName("NinjaOptionGroupTitle")
+        title.setObjectName("RakeOptionGroupTitle")
         title.setWordWrap(True)
         self._bind_text(title, title_key)
         layout.addWidget(title)
 
         if note_key is not None:
             note = QtWidgets.QLabel()
-            note.setObjectName("NinjaOptionGroupNote")
+            note.setObjectName("RakeOptionGroupNote")
             note.setWordWrap(True)
             self._bind_text(note, note_key)
             layout.addWidget(note)
@@ -1706,13 +1706,13 @@ class ControlPanel(QtWidgets.QWidget):
 
         self._rake_rows = [
             self._create_separator(),
-            self._create_ninja_option_group("rake_device_section", rake_device_rows, "rake_device_section_note"),
+            self._create_rake_option_group("rake_device_section", rake_device_rows, "rake_device_section_note"),
             self._create_separator(),
-            self._create_ninja_option_group("rake_cursor_section", rake_cursor_rows),
+            self._create_rake_option_group("rake_cursor_section", rake_cursor_rows),
             self._create_separator(),
-            self._create_ninja_option_group("rake_calibration_params_section", rake_calibration_rows),
+            self._create_rake_option_group("rake_calibration_params_section", rake_calibration_rows),
             self._create_separator(),
-            self._create_ninja_option_group("rake_selection_section", rake_selection_rows, "rake_selection_section_note"),
+            self._create_rake_option_group("rake_selection_section", rake_selection_rows, "rake_selection_section_note"),
         ]
 
         self.experiment_task_type_row = self._create_field_row("experiment_task_type", self.experiment_task_type_combo, "experiment_task_type_desc")
@@ -3039,7 +3039,7 @@ error "No supported browser window found"
                 border-radius: 22px;
             }}
 
-            QFrame#NinjaOptionGroup {{
+            QFrame#RakeOptionGroup {{
                 background: {bg_card};
                 border: 2px solid {border_card};
                 border-radius: 18px;
@@ -3047,7 +3047,7 @@ error "No supported browser window found"
                 margin-bottom: 10px;
             }}
 
-            QLabel#NinjaOptionGroupTitle {{
+            QLabel#RakeOptionGroupTitle {{
                 background: transparent;
                 color: {text_main};
                 font-size: 16px;
@@ -3055,7 +3055,7 @@ error "No supported browser window found"
                 padding: 4px 2px 4px 2px;
             }}
 
-            QLabel#NinjaOptionGroupNote {{
+            QLabel#RakeOptionGroupNote {{
                 background: transparent;
                 color: {text_muted};
                 font-size: 13px;
@@ -3367,7 +3367,7 @@ error "No supported browser window found"
             high_contrast_mode=self.high_contrast_cb.isChecked(),
             stronger_visual_cue=self._hidden_config.stronger_visual_cue,
             single_click_as_double_click=self._hidden_config.single_click_as_double_click,
-            preset="Normal Mouse Baseline" if mode == "baseline" else "Standard Mouse" if mode == "mouse_filter" else "TargetFinder" if mode == "targetfinder" else "Bubble Only" if mode == "bubble" else "Semantic Only" if mode == "semantic" else "DynaSpot" if mode == "dynaspot" else "Ninja Cursors(gaze)" if mode == "rake" else "",
+            preset="Normal Mouse Baseline" if mode == "baseline" else "Standard Mouse" if mode == "mouse_filter" else "TargetFinder" if mode == "targetfinder" else "Bubble Only" if mode == "bubble" else "Semantic Only" if mode == "semantic" else "DynaSpot" if mode == "dynaspot" else "Rake Cursor(gaze)" if mode == "rake" else "",
             enable_tts=self.enable_tts_cb.isChecked(),
             language=self._language_code(),
         )
@@ -3475,7 +3475,7 @@ error "No supported browser window found"
             self._selected_mode = "semantic"
         elif cfg.enable_dynaspot or cfg.preset == "DynaSpot":
             self._selected_mode = "dynaspot"
-        elif cfg.enable_rake_cursor or cfg.preset in {"Rake Cursor", "Ninja Cursors(gaze)"}:
+        elif cfg.enable_rake_cursor or cfg.preset in {"Rake Cursor", "Rake Cursor(gaze)"}:
             self._selected_mode = "rake"
         else:
             self._selected_mode = None
@@ -3632,7 +3632,7 @@ error "No supported browser window found"
         elif cfg.enable_dynaspot:
             module_name = "target_finder_toolkit.dynaspot"
         elif cfg.enable_rake_cursor:
-            module_name = "target_finder_toolkit.ninjacursors"
+            module_name = "target_finder_toolkit.rakecursor"
         else:
             module_name = "target_finder_toolkit.semanticpointing"
         cmd = [sys.executable, "-m", module_name]
@@ -3670,7 +3670,7 @@ error "No supported browser window found"
                 "--camera-index", str(cfg.rake_camera_index),
                 "--screen-width-cm", str(cfg.rake_screen_width_cm),
                 "--screen-height-cm", str(cfg.rake_screen_height_cm),
-                "--ninja-spacing", str(cfg.rake_spacing),
+                "--rake-spacing", str(cfg.rake_spacing),
                 "--gaze-smoothing", str(cfg.rake_gaze_smoothing),
                 "--gaze-gain-x", str(DEFAULT_RAKE_GAZE_GAIN_X),
                 "--gaze-gain-y", str(DEFAULT_RAKE_GAZE_GAIN_Y),
@@ -3704,7 +3704,7 @@ error "No supported browser window found"
         if cfg.enable_dynaspot:
             return "dynaspot"
         if cfg.enable_rake_cursor:
-            return "ninja_cursors"
+            return "rake_cursor"
         return "semantic"
 
     def _safe_participant_id(self, participant_id: str) -> str:
@@ -3811,34 +3811,34 @@ error "No supported browser window found"
             ]
         if cfg.enable_rake_cursor:
             cmd += [
-                "--ninja-camera-index", str(cfg.rake_camera_index),
-                "--ninja-screen-width-cm", str(cfg.rake_screen_width_cm),
-                "--ninja-screen-height-cm", str(cfg.rake_screen_height_cm),
-                "--ninja-spacing", str(cfg.rake_spacing),
-                "--ninja-gaze-smoothing", str(cfg.rake_gaze_smoothing),
-                "--ninja-gaze-gain-x", str(DEFAULT_RAKE_GAZE_GAIN_X),
-                "--ninja-gaze-gain-y", str(DEFAULT_RAKE_GAZE_GAIN_Y),
-                "--ninja-gaze-offset-x", str(DEFAULT_RAKE_GAZE_OFFSET_X),
-                "--ninja-gaze-offset-y", str(DEFAULT_RAKE_GAZE_OFFSET_Y),
-                "--ninja-selection-hold", str(cfg.rake_selection_hold),
-                "--ninja-calib-points", str(cfg.rake_calib_points),
+                "--rake-camera-index", str(cfg.rake_camera_index),
+                "--rake-screen-width-cm", str(cfg.rake_screen_width_cm),
+                "--rake-screen-height-cm", str(cfg.rake_screen_height_cm),
+                "--rake-spacing", str(cfg.rake_spacing),
+                "--rake-gaze-smoothing", str(cfg.rake_gaze_smoothing),
+                "--rake-gaze-gain-x", str(DEFAULT_RAKE_GAZE_GAIN_X),
+                "--rake-gaze-gain-y", str(DEFAULT_RAKE_GAZE_GAIN_Y),
+                "--rake-gaze-offset-x", str(DEFAULT_RAKE_GAZE_OFFSET_X),
+                "--rake-gaze-offset-y", str(DEFAULT_RAKE_GAZE_OFFSET_Y),
+                "--rake-selection-hold", str(cfg.rake_selection_hold),
+                "--rake-calib-points", str(cfg.rake_calib_points),
             ]
             if cfg.rake_lock_on_dwell:
-                cmd.append("--ninja-lock-on-dwell")
+                cmd.append("--rake-lock-on-dwell")
             if cfg.rake_lock_on_key_comparative:
-                cmd.append("--ninja-lock-on-key")
+                cmd.append("--rake-lock-on-key")
             # The tester gaze marker is only for calibration/debugging and must
             # not carry over into experimental trials.
-            cmd.append("--ninja-hide-gaze-point")
+            cmd.append("--rake-hide-gaze-point")
             if not cfg.rake_show_debug_status:
-                cmd.append("--ninja-hide-debug-status")
+                cmd.append("--rake-hide-debug-status")
             if cfg.rake_snap_system_cursor:
-                cmd.append("--ninja-snap-system-cursor-to-active")
+                cmd.append("--rake-snap-system-cursor-to-active")
             if cfg.rake_use_calibration:
-                cmd.append("--ninja-auto-calibrate")
+                cmd.append("--rake-auto-calibrate")
             # Experimental tasks use ground-truth annotations / generated targets,
             # not live TargetFinder/YOLO detections.
-            cmd.append("--ninja-without-targetfinder")
+            cmd.append("--rake-without-targetfinder")
         return cmd
 
     def _build_synthetic_fitts_command(self, cfg: PanelConfig):
@@ -3901,36 +3901,36 @@ error "No supported browser window found"
                 "--dynaspot-lag", str(cfg.dynaspot_lag),
                 "--dynaspot-reduce-time", str(cfg.dynaspot_reduce_time),
             ]
-        if technique == "ninja_cursors":
+        if technique == "rake_cursor":
             cmd += [
-                "--ninja-camera-index", str(cfg.rake_camera_index),
-                "--ninja-screen-width-cm", str(cfg.rake_screen_width_cm),
-                "--ninja-screen-height-cm", str(cfg.rake_screen_height_cm),
-                "--ninja-spacing", str(cfg.rake_spacing),
-                "--ninja-gaze-smoothing", str(cfg.rake_gaze_smoothing),
-                "--ninja-gaze-gain-x", str(DEFAULT_RAKE_GAZE_GAIN_X),
-                "--ninja-gaze-gain-y", str(DEFAULT_RAKE_GAZE_GAIN_Y),
-                "--ninja-gaze-offset-x", str(DEFAULT_RAKE_GAZE_OFFSET_X),
-                "--ninja-gaze-offset-y", str(DEFAULT_RAKE_GAZE_OFFSET_Y),
-                "--ninja-selection-hold", str(cfg.rake_selection_hold),
-                "--ninja-calib-points", str(cfg.rake_calib_points),
+                "--rake-camera-index", str(cfg.rake_camera_index),
+                "--rake-screen-width-cm", str(cfg.rake_screen_width_cm),
+                "--rake-screen-height-cm", str(cfg.rake_screen_height_cm),
+                "--rake-spacing", str(cfg.rake_spacing),
+                "--rake-gaze-smoothing", str(cfg.rake_gaze_smoothing),
+                "--rake-gaze-gain-x", str(DEFAULT_RAKE_GAZE_GAIN_X),
+                "--rake-gaze-gain-y", str(DEFAULT_RAKE_GAZE_GAIN_Y),
+                "--rake-gaze-offset-x", str(DEFAULT_RAKE_GAZE_OFFSET_X),
+                "--rake-gaze-offset-y", str(DEFAULT_RAKE_GAZE_OFFSET_Y),
+                "--rake-selection-hold", str(cfg.rake_selection_hold),
+                "--rake-calib-points", str(cfg.rake_calib_points),
             ]
             if cfg.rake_lock_on_dwell:
-                cmd.append("--ninja-lock-on-dwell")
+                cmd.append("--rake-lock-on-dwell")
             if cfg.rake_lock_on_key_comparative:
-                cmd.append("--ninja-lock-on-key")
+                cmd.append("--rake-lock-on-key")
             # The tester gaze marker is only for calibration/debugging and must
             # not carry over into experimental trials.
-            cmd.append("--ninja-hide-gaze-point")
+            cmd.append("--rake-hide-gaze-point")
             if not cfg.rake_show_debug_status:
-                cmd.append("--ninja-hide-debug-status")
+                cmd.append("--rake-hide-debug-status")
             if cfg.rake_snap_system_cursor:
-                cmd.append("--ninja-snap-system-cursor-to-active")
+                cmd.append("--rake-snap-system-cursor-to-active")
             if cfg.rake_use_calibration:
-                cmd.append("--ninja-auto-calibrate")
+                cmd.append("--rake-auto-calibrate")
             # Synthetic Fitts uses generated ground-truth targets,
             # not live TargetFinder/YOLO detections.
-            cmd.append("--ninja-without-targetfinder")
+            cmd.append("--rake-without-targetfinder")
         return cmd
 
     def _build_synthetic_fitts_session_command(self, cfg: PanelConfig, output_dir: Path | None = None):
@@ -3978,27 +3978,27 @@ error "No supported browser window found"
             str(cfg.dynaspot_lag),
             "--dynaspot-reduce-time",
             str(cfg.dynaspot_reduce_time),
-            "--ninja-camera-index",
+            "--rake-camera-index",
             str(cfg.rake_camera_index),
-            "--ninja-screen-width-cm",
+            "--rake-screen-width-cm",
             str(cfg.rake_screen_width_cm),
-            "--ninja-screen-height-cm",
+            "--rake-screen-height-cm",
             str(cfg.rake_screen_height_cm),
-            "--ninja-spacing",
+            "--rake-spacing",
             str(cfg.rake_spacing),
-            "--ninja-gaze-smoothing",
+            "--rake-gaze-smoothing",
             str(cfg.rake_gaze_smoothing),
-            "--ninja-gaze-gain-x",
+            "--rake-gaze-gain-x",
             str(DEFAULT_RAKE_GAZE_GAIN_X),
-            "--ninja-gaze-gain-y",
+            "--rake-gaze-gain-y",
             str(DEFAULT_RAKE_GAZE_GAIN_Y),
-            "--ninja-gaze-offset-x",
+            "--rake-gaze-offset-x",
             str(DEFAULT_RAKE_GAZE_OFFSET_X),
-            "--ninja-gaze-offset-y",
+            "--rake-gaze-offset-y",
             str(DEFAULT_RAKE_GAZE_OFFSET_Y),
-            "--ninja-selection-hold",
+            "--rake-selection-hold",
             str(cfg.rake_selection_hold),
-            "--ninja-calib-points",
+            "--rake-calib-points",
             str(cfg.rake_calib_points),
         ]
         if output_dir is not None:
@@ -4013,23 +4013,23 @@ error "No supported browser window found"
         if cfg.disable_accel:
             cmd.append("--semantic-disable-accel")
         if cfg.rake_lock_on_dwell:
-            cmd.append("--ninja-lock-on-dwell")
+            cmd.append("--rake-lock-on-dwell")
         if cfg.rake_lock_on_key_comparative:
-            cmd.append("--ninja-lock-on-key")
+            cmd.append("--rake-lock-on-key")
         # The tester gaze marker is only for calibration/debugging and must
         # not carry over into experimental trials.
-        cmd.append("--ninja-hide-gaze-point")
+        cmd.append("--rake-hide-gaze-point")
         if cfg.rake_show_debug_status:
-            cmd.append("--ninja-show-debug-status")
+            cmd.append("--rake-show-debug-status")
         else:
-            cmd.append("--ninja-hide-debug-status")
+            cmd.append("--rake-hide-debug-status")
         if cfg.rake_snap_system_cursor:
-            cmd.append("--ninja-snap-system-cursor-to-active")
+            cmd.append("--rake-snap-system-cursor-to-active")
         if cfg.rake_use_calibration:
-            cmd.append("--ninja-auto-calibrate")
+            cmd.append("--rake-auto-calibrate")
         # Synthetic Fitts sessions use generated ground-truth targets,
         # not live TargetFinder/YOLO detections.
-        cmd.append("--ninja-without-targetfinder")
+        cmd.append("--rake-without-targetfinder")
         return cmd
 
     def _build_comparative_session_command(self, cfg: PanelConfig):
@@ -4081,27 +4081,27 @@ error "No supported browser window found"
             str(cfg.dynaspot_lag),
             "--dynaspot-reduce-time",
             str(cfg.dynaspot_reduce_time),
-            "--ninja-camera-index",
+            "--rake-camera-index",
             str(cfg.rake_camera_index),
-            "--ninja-screen-width-cm",
+            "--rake-screen-width-cm",
             str(cfg.rake_screen_width_cm),
-            "--ninja-screen-height-cm",
+            "--rake-screen-height-cm",
             str(cfg.rake_screen_height_cm),
-            "--ninja-spacing",
+            "--rake-spacing",
             str(cfg.rake_spacing),
-            "--ninja-gaze-smoothing",
+            "--rake-gaze-smoothing",
             str(cfg.rake_gaze_smoothing),
-            "--ninja-gaze-gain-x",
+            "--rake-gaze-gain-x",
             str(DEFAULT_RAKE_GAZE_GAIN_X),
-            "--ninja-gaze-gain-y",
+            "--rake-gaze-gain-y",
             str(DEFAULT_RAKE_GAZE_GAIN_Y),
-            "--ninja-gaze-offset-x",
+            "--rake-gaze-offset-x",
             str(DEFAULT_RAKE_GAZE_OFFSET_X),
-            "--ninja-gaze-offset-y",
+            "--rake-gaze-offset-y",
             str(DEFAULT_RAKE_GAZE_OFFSET_Y),
-            "--ninja-selection-hold",
+            "--rake-selection-hold",
             str(cfg.rake_selection_hold),
-            "--ninja-calib-points",
+            "--rake-calib-points",
             str(cfg.rake_calib_points),
         ]
         if not cfg.experiment_fullscreen:
@@ -4116,23 +4116,23 @@ error "No supported browser window found"
         if cfg.disable_accel:
             cmd.append("--semantic-disable-accel")
         if cfg.rake_lock_on_dwell:
-            cmd.append("--ninja-lock-on-dwell")
+            cmd.append("--rake-lock-on-dwell")
         if cfg.rake_lock_on_key_comparative:
-            cmd.append("--ninja-lock-on-key")
+            cmd.append("--rake-lock-on-key")
         # The tester gaze marker is only for calibration/debugging and must
         # not carry over into experimental trials.
-        cmd.append("--ninja-hide-gaze-point")
+        cmd.append("--rake-hide-gaze-point")
         if cfg.rake_show_debug_status:
-            cmd.append("--ninja-show-debug-status")
+            cmd.append("--rake-show-debug-status")
         else:
-            cmd.append("--ninja-hide-debug-status")
+            cmd.append("--rake-hide-debug-status")
         if cfg.rake_snap_system_cursor:
-            cmd.append("--ninja-snap-system-cursor-to-active")
+            cmd.append("--rake-snap-system-cursor-to-active")
         if cfg.rake_use_calibration:
-            cmd.append("--ninja-auto-calibrate")
+            cmd.append("--rake-auto-calibrate")
         # Comparative sessions use ground-truth labels for both task families,
         # not live TargetFinder/YOLO detections.
-        cmd.append("--ninja-without-targetfinder")
+        cmd.append("--rake-without-targetfinder")
         return cmd
 
     def _build_experiment_session_command(self, cfg: PanelConfig, output_dir: Path | None = None):
@@ -4191,43 +4191,43 @@ error "No supported browser window found"
             "--dynaspot-spot-width", str(cfg.dynaspot_spot_width),
             "--dynaspot-lag", str(cfg.dynaspot_lag),
             "--dynaspot-reduce-time", str(cfg.dynaspot_reduce_time),
-            "--ninja-camera-index", str(cfg.rake_camera_index),
-            "--ninja-screen-width-cm", str(cfg.rake_screen_width_cm),
-            "--ninja-screen-height-cm", str(cfg.rake_screen_height_cm),
-            "--ninja-spacing", str(cfg.rake_spacing),
-            "--ninja-gaze-smoothing", str(cfg.rake_gaze_smoothing),
-            "--ninja-gaze-gain-x", str(DEFAULT_RAKE_GAZE_GAIN_X),
-            "--ninja-gaze-gain-y", str(DEFAULT_RAKE_GAZE_GAIN_Y),
-            "--ninja-gaze-offset-x", str(DEFAULT_RAKE_GAZE_OFFSET_X),
-            "--ninja-gaze-offset-y", str(DEFAULT_RAKE_GAZE_OFFSET_Y),
-            "--ninja-selection-hold", str(cfg.rake_selection_hold),
-            "--ninja-calib-points", str(cfg.rake_calib_points),
+            "--rake-camera-index", str(cfg.rake_camera_index),
+            "--rake-screen-width-cm", str(cfg.rake_screen_width_cm),
+            "--rake-screen-height-cm", str(cfg.rake_screen_height_cm),
+            "--rake-spacing", str(cfg.rake_spacing),
+            "--rake-gaze-smoothing", str(cfg.rake_gaze_smoothing),
+            "--rake-gaze-gain-x", str(DEFAULT_RAKE_GAZE_GAIN_X),
+            "--rake-gaze-gain-y", str(DEFAULT_RAKE_GAZE_GAIN_Y),
+            "--rake-gaze-offset-x", str(DEFAULT_RAKE_GAZE_OFFSET_X),
+            "--rake-gaze-offset-y", str(DEFAULT_RAKE_GAZE_OFFSET_Y),
+            "--rake-selection-hold", str(cfg.rake_selection_hold),
+            "--rake-calib-points", str(cfg.rake_calib_points),
         ]
         if cfg.rake_lock_on_dwell:
-            cmd.append("--ninja-lock-on-dwell")
+            cmd.append("--rake-lock-on-dwell")
         if cfg.rake_lock_on_key_comparative:
-            cmd.append("--ninja-lock-on-key")
+            cmd.append("--rake-lock-on-key")
         # The tester gaze marker is only for calibration/debugging and must
         # not carry over into experimental trials.
-        cmd.append("--ninja-hide-gaze-point")
+        cmd.append("--rake-hide-gaze-point")
         if cfg.rake_show_debug_status:
-            cmd.append("--ninja-show-debug-status")
+            cmd.append("--rake-show-debug-status")
         else:
-            cmd.append("--ninja-hide-debug-status")
+            cmd.append("--rake-hide-debug-status")
         if cfg.rake_snap_system_cursor:
-            cmd.append("--ninja-snap-system-cursor-to-active")
+            cmd.append("--rake-snap-system-cursor-to-active")
         if cfg.rake_use_calibration:
-            cmd.append("--ninja-auto-calibrate")
+            cmd.append("--rake-auto-calibrate")
         # Realistic experimental sessions use annotation-control files,
         # not live TargetFinder/YOLO detections.
-        cmd.append("--ninja-without-targetfinder")
+        cmd.append("--rake-without-targetfinder")
         return cmd
 
     def _is_demo_running(self):
         return self.process is not None and self.process.poll() is None
 
     def _handle_process_output_line(self, line: str):
-        prefix = "__NINJA_CALIB__ "
+        prefix = "__RAKE_CALIB__ "
         if not line.startswith(prefix):
             return
         try:
@@ -4311,7 +4311,7 @@ error "No supported browser window found"
             if line:
                 self._process_output_lines.append(line)
                 self._process_output_lines = self._process_output_lines[-20:]
-                if line.startswith("[ninja]") or line.startswith("[calib]"):
+                if line.startswith("[rake]") or line.startswith("[calib]"):
                     print(line, flush=True)
             self._handle_process_output_line(line)
 
@@ -4387,6 +4387,13 @@ error "No supported browser window found"
         else:
             popen_kwargs["start_new_session"] = True
         self.process = attach_windows_kill_on_close_job(subprocess.Popen(cmd, **popen_kwargs))
+        # Control Panel stays open as its own foreground app while the
+        # experiment subprocess starts. macOS does not automatically hand
+        # keyboard/mouse focus to a background-launched process, so the
+        # experiment's first screen (e.g. comparative_session's Welcome
+        # screen) can be fully drawn and still not receive any clicks until
+        # something explicitly activates it. Force that here.
+        activate_process_by_pid(self.process.pid)
         self._process_output_buffer = ""
         self._process_output_lines = []
         if self.process.stdout is not None:

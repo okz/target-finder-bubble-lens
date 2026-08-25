@@ -96,12 +96,12 @@ QUALITATIVE_PHASES = (
         "Pointage semantique",
     ),
     Phase(
-        "ninja",
-        "ninja_cursors",
+        "rake",
+        "rake_cursor",
         "none",
         TASK_ORDER,
-        "Ninja Cursors",
-        "Ninja Cursors",
+        "Rake Cursor",
+        "Rake Cursor",
     ),
 )
 
@@ -201,7 +201,7 @@ class QualitativeBaselineWindow(QtWidgets.QWidget):
         self._phase_process_started = False
         self._phase_process_ready = False
         self._phase_prepare_started_at = 0.0
-        self._ninja_waiting_for_calibration = False
+        self._rake_waiting_for_calibration = False
         self._desktop_fullscreen_applied = False
         self.error_count = 0
         self.click_count = 0
@@ -235,7 +235,7 @@ class QualitativeBaselineWindow(QtWidgets.QWidget):
         control_parent = log_file.parent if log_file is not None else PROJECT_ROOT / "qualitative_logs"
         control_parent.mkdir(parents=True, exist_ok=True)
         self.annotation_control_file = control_parent / f"{self.session_id}.annotations.json"
-        self.ninja_control_file = control_parent / f"{self.session_id}.ninja_control"
+        self.rake_control_file = control_parent / f"{self.session_id}.rake_control"
         self.standard_control_file = control_parent / f"{self.session_id}.standard_control"
 
         self.cursor_timer = QtCore.QTimer(self)
@@ -267,7 +267,7 @@ class QualitativeBaselineWindow(QtWidgets.QWidget):
             }
         )
         self._write_annotation_control_state("paused")
-        self._write_ninja_control_state("paused")
+        self._write_rake_control_state("paused")
         self._write_standard_control_state("paused")
         QtCore.QTimer.singleShot(250, self._start_next_phase)
 
@@ -323,7 +323,7 @@ class QualitativeBaselineWindow(QtWidgets.QWidget):
         self.current_trial = None
         self.trials = self._make_trials(self.phase.task_order)
         self._phase_process_started = False
-        self._ninja_waiting_for_calibration = False
+        self._rake_waiting_for_calibration = False
         self.phase_preparing = False
         self.phase_preparation_title = ""
         self.phase_preparation_body = ""
@@ -381,9 +381,9 @@ class QualitativeBaselineWindow(QtWidgets.QWidget):
         completed_phase = self.phase
         self.phase_preparing = False
         self.preparation_cursor_lock_timer.stop()
-        self._ninja_waiting_for_calibration = False
+        self._rake_waiting_for_calibration = False
         self._write_annotation_control_state("paused")
-        self._write_ninja_control_state("paused")
+        self._write_rake_control_state("paused")
         self._write_standard_control_state("paused")
         self._stop_phase_process()
         self.logger.write(
@@ -444,7 +444,7 @@ class QualitativeBaselineWindow(QtWidgets.QWidget):
             self._phase_process_started = True
             self._start_phase_output_reader(self.phase.key, self.technique_process)
             self._phase_process_output_timer.start()
-            if self.phase.key != "ninja":
+            if self.phase.key != "rake":
                 self.keep_front_timer.start()
                 for delay_ms in (50, 150, 350):
                     QtCore.QTimer.singleShot(delay_ms, self._ensure_task_window_visible)
@@ -499,14 +499,14 @@ class QualitativeBaselineWindow(QtWidgets.QWidget):
                     "line": line,
                 }
             )
-            if phase_key == "ninja":
-                self._handle_ninja_process_output(line)
+            if phase_key == "rake":
+                self._handle_rake_process_output(line)
             elif phase_key == "bubble":
                 self._handle_bubble_process_output(line)
         proc = self.technique_process
         if proc is not None and proc.poll() is not None:
-            if self._ninja_waiting_for_calibration:
-                self._ninja_waiting_for_calibration = False
+            if self._rake_waiting_for_calibration:
+                self._rake_waiting_for_calibration = False
                 self._activate_current_trial()
             if not drained:
                 self._phase_process_output_timer.stop()
@@ -523,9 +523,9 @@ class QualitativeBaselineWindow(QtWidgets.QWidget):
                 }
             )
 
-    def _handle_ninja_process_output(self, line: str):
-        calib_prefix = "__NINJA_CALIB__ "
-        runtime_prefix = "__NINJA_EVENT__ "
+    def _handle_rake_process_output(self, line: str):
+        calib_prefix = "__RAKE_CALIB__ "
+        runtime_prefix = "__RAKE_EVENT__ "
         if line.startswith(runtime_prefix):
             try:
                 payload = json.loads(line[len(runtime_prefix):])
@@ -534,10 +534,10 @@ class QualitativeBaselineWindow(QtWidgets.QWidget):
             if payload:
                 self.logger.write(
                     {
-                        "type": "ninja_runtime_event",
+                        "type": "rake_runtime_event",
                         "participant_id": self.participant_id,
                         "session_id": self.session_id,
-                        "phase": "ninja",
+                        "phase": "rake",
                         **payload,
                     }
                 )
@@ -551,17 +551,17 @@ class QualitativeBaselineWindow(QtWidgets.QWidget):
         if payload:
             self.logger.write(
                 {
-                    "type": "ninja_calibration_event",
+                    "type": "rake_calibration_event",
                     "participant_id": self.participant_id,
                     "session_id": self.session_id,
-                    "phase": "ninja",
+                    "phase": "rake",
                     **payload,
                 }
             )
         event = payload.get("event")
-        if event in {"calibrated", "failed", "cancelled"} and self._ninja_waiting_for_calibration:
-            self._ninja_waiting_for_calibration = False
-            self._write_ninja_control_state(self._center_control_state("ready"))
+        if event in {"calibrated", "failed", "cancelled"} and self._rake_waiting_for_calibration:
+            self._rake_waiting_for_calibration = False
+            self._write_rake_control_state(self._center_control_state("ready"))
             self.keep_front_timer.start()
             self._ensure_task_window_visible()
             QtCore.QTimer.singleShot(350, self._activate_current_trial)
@@ -602,15 +602,15 @@ class QualitativeBaselineWindow(QtWidgets.QWidget):
                 "--disable-keyboard-quit",
                 *common,
             ]
-        if phase.key == "ninja":
+        if phase.key == "rake":
             return [
                 sys.executable,
                 "-m",
-                "target_finder_toolkit.ninjacursors",
+                "target_finder_toolkit.rakecursor",
                 "--annotation-control-file",
                 str(self.annotation_control_file),
                 "--experiment-control-file",
-                str(self.ninja_control_file),
+                str(self.rake_control_file),
                 "--disable-keyboard-quit",
                 "--hide-debug-status",
                 "--hide-gaze-point",
@@ -681,14 +681,14 @@ class QualitativeBaselineWindow(QtWidgets.QWidget):
             if self.phase is not None and self.phase.key == "bubble":
                 self._reset_system_cursor_to_trial_center()
                 self.preparation_cursor_lock_timer.start()
-            if self.phase is not None and self.phase.key == "ninja":
-                self._write_ninja_control_state("calibrate")
+            if self.phase is not None and self.phase.key == "rake":
+                self._write_rake_control_state("calibrate")
             if self._start_phase_process():
-                if self.phase is not None and self.phase.key == "ninja":
-                    self._ninja_waiting_for_calibration = True
+                if self.phase is not None and self.phase.key == "rake":
+                    self._rake_waiting_for_calibration = True
                     self.logger.write(
                         {
-                            "type": "ninja_calibration_wait",
+                            "type": "rake_calibration_wait",
                             **self._base_event(),
                         }
                     )
@@ -757,18 +757,18 @@ class QualitativeBaselineWindow(QtWidgets.QWidget):
 
     def _set_phase_preparation_message(self):
         label = self._phase_label()
-        if self.phase is not None and self.phase.key == "ninja":
+        if self.phase is not None and self.phase.key == "rake":
             if is_english(self.language):
-                self.phase_preparation_title = "Ninja Cursors calibration"
+                self.phase_preparation_title = "Rake Cursor calibration"
                 self.phase_preparation_body = (
                     "Look at each red calibration point until the next one appears. "
-                    "The first Ninja trial starts automatically after calibration."
+                    "The first Rake trial starts automatically after calibration."
                 )
             else:
-                self.phase_preparation_title = "Calibration Ninja Cursors"
+                self.phase_preparation_title = "Calibration Rake Cursor"
                 self.phase_preparation_body = (
                     "Regardez chaque point rouge de calibration jusqu'au point suivant. "
-                    "Le premier essai Ninja commence automatiquement après la calibration."
+                    "Le premier essai Rake commence automatiquement après la calibration."
                 )
             return
         if is_english(self.language):
@@ -792,8 +792,8 @@ class QualitativeBaselineWindow(QtWidgets.QWidget):
         self._write_annotation_control_state("active")
         if self.phase is not None and self.phase.key == "standard_avec_filter":
             self._write_standard_control_state(self._center_control_state("active"))
-        if self.phase is not None and self.phase.key == "ninja":
-            self._write_ninja_control_state(self._center_control_state("active"))
+        if self.phase is not None and self.phase.key == "rake":
+            self._write_rake_control_state(self._center_control_state("active"))
         self.phase_preparing = False
         self.in_trial = True
         self.trial_started_at = time.monotonic()
@@ -808,7 +808,7 @@ class QualitativeBaselineWindow(QtWidgets.QWidget):
             }
         )
         self.cursor_timer.start()
-        if self.phase is None or self.phase.key not in {"bubble", "semantic", "ninja"}:
+        if self.phase is None or self.phase.key not in {"bubble", "semantic", "rake"}:
             self._ensure_task_window_visible()
         self.update()
 
@@ -1001,12 +1001,12 @@ class QualitativeBaselineWindow(QtWidgets.QWidget):
                 }
             )
 
-    def _write_ninja_control_state(self, state: str):
+    def _write_rake_control_state(self, state: str):
         try:
-            self.ninja_control_file.write_text(state, encoding="utf-8")
+            self.rake_control_file.write_text(state, encoding="utf-8")
             self.logger.write(
                 {
-                    "type": "ninja_control_state",
+                    "type": "rake_control_state",
                     "participant_id": self.participant_id,
                     "session_id": self.session_id,
                     "phase": self.phase.key if self.phase is not None else None,
@@ -1016,7 +1016,7 @@ class QualitativeBaselineWindow(QtWidgets.QWidget):
         except Exception as exc:
             self.logger.write(
                 {
-                    "type": "ninja_control_error",
+                    "type": "rake_control_error",
                     "participant_id": self.participant_id,
                     "session_id": self.session_id,
                     "phase": self.phase.key if self.phase is not None else None,
@@ -1400,7 +1400,7 @@ class QualitativeBaselineWindow(QtWidgets.QWidget):
         self.keep_front_timer.stop()
         self.preparation_cursor_lock_timer.stop()
         self._write_annotation_control_state("paused")
-        self._write_ninja_control_state("paused")
+        self._write_rake_control_state("paused")
         self._write_standard_control_state("paused")
         self._stop_phase_process()
         self._cleanup_annotation_control_file()
@@ -1421,7 +1421,7 @@ class QualitativeBaselineWindow(QtWidgets.QWidget):
         except Exception:
             pass
         try:
-            self.ninja_control_file.unlink(missing_ok=True)
+            self.rake_control_file.unlink(missing_ok=True)
         except Exception:
             pass
         try:
@@ -1513,8 +1513,8 @@ class QualitativeBaselineWindow(QtWidgets.QWidget):
             next_text = f"Next phase: {self.next_phase_label}."
             hint = "When the pause is over, click the button to continue."
             button = "Continue"
-            ninja_extra = (
-                "Ninja Cursors starts with eye-tracking calibration: look at each red point until it changes. "
+            rake_extra = (
+                "Rake Cursor starts with eye-tracking calibration: look at each red point until it changes. "
                 "Then 8 cursors appear around the screen center at the start of every trial. "
                 "Look at the cursor you want to use; when it turns orange, click normally. "
                 "For drag tasks, keep looking at the same active cursor while holding the mouse button."
@@ -1525,15 +1525,15 @@ class QualitativeBaselineWindow(QtWidgets.QWidget):
             next_text = f"Phase suivante : {self.next_phase_label}."
             hint = "Quand la pause est terminée, cliquez sur le bouton pour continuer."
             button = "Continuer"
-            ninja_extra = (
-                "Ninja Cursors commence par une calibration du regard : regardez chaque point rouge jusqu'au changement. "
+            rake_extra = (
+                "Rake Cursor commence par une calibration du regard : regardez chaque point rouge jusqu'au changement. "
                 "Ensuite, 8 curseurs apparaissent autour du centre de l'écran au début de chaque essai. "
                 "Regardez le curseur que vous voulez utiliser ; quand il devient orange, cliquez normalement. "
                 "Pour glisser-déposer, gardez le regard sur le même curseur actif pendant que le bouton est maintenu."
             )
         extra = ""
-        if self.phase_index + 1 < len(self.phases) and self.phases[self.phase_index + 1].key == "ninja":
-            extra = "\n\n" + ninja_extra
+        if self.phase_index + 1 < len(self.phases) and self.phases[self.phase_index + 1].key == "rake":
+            extra = "\n\n" + rake_extra
         body_height = 310 if extra else 150
         hint_y = self.height() * (0.64 if extra else 0.51)
         button_y = self.height() * (0.73 if extra else 0.62)

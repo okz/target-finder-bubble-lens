@@ -1,9 +1,9 @@
 """
-Ninja Cursors(gaze) Demo
+Rake Cursor(gaze) Demo
 ========================
 
 This module implements a gaze-assisted multi-cursor technique inspired by
-Ninja Cursor and gaze-driven cursor selection:
+Rake Cursor and gaze-driven cursor selection:
 
 - eight distributed cursors move synchronously with the mouse,
 - gaze selects which cursor is currently active,
@@ -77,11 +77,11 @@ except Exception as exc:  # pragma: no cover - optional dependency
 else:
     _WEBEYETRACK_IMPORT_ERROR = None
 
-__all__ = ["ninja_cursors", "main"]
+__all__ = ["rake_cursor", "main"]
 
 _SESSION_STOP_REASON = None
-_CALIB_EVENT_PREFIX = "__NINJA_CALIB__ "
-_NINJA_EVENT_PREFIX = "__NINJA_EVENT__ "
+_CALIB_EVENT_PREFIX = "__RAKE_CALIB__ "
+_RAKE_EVENT_PREFIX = "__RAKE_EVENT__ "
 
 
 if sys.platform.startswith("win"):
@@ -130,9 +130,9 @@ def _emit_calibration_event(event: str, **payload):
         pass
 
 
-def _emit_ninja_event(event: str, **payload):
+def _emit_rake_event(event: str, **payload):
     try:
-        print(f"{_NINJA_EVENT_PREFIX}{json.dumps({'event': event, **payload}, ensure_ascii=False)}", flush=True)
+        print(f"{_RAKE_EVENT_PREFIX}{json.dumps({'event': event, **payload}, ensure_ascii=False)}", flush=True)
     except Exception:
         pass
 
@@ -273,17 +273,17 @@ def _create_webeyetrack(config):
 def _patch_webeyetrack_failure_reporting(wet_module):
     """Expose the internal step failure reason instead of swallowing it inside WebEyeTrack."""
     webeyetrack_cls = getattr(wet_module, "WebEyeTrack", None)
-    if webeyetrack_cls is None or getattr(webeyetrack_cls, "_ninja_failure_patch", False):
+    if webeyetrack_cls is None or getattr(webeyetrack_cls, "_rake_failure_patch", False):
         return
 
     original_step = webeyetrack_cls.step
 
     def patched_step(self, *args, **kwargs):
-        self._ninja_last_step_error = None
+        self._rake_last_step_error = None
         try:
             return original_step(self, *args, **kwargs)
         except Exception as exc:
-            self._ninja_last_step_error = f"{type(exc).__name__}: {exc}"
+            self._rake_last_step_error = f"{type(exc).__name__}: {exc}"
             raise
 
     original_prepare_input = webeyetrack_cls.prepare_input
@@ -292,17 +292,17 @@ def _patch_webeyetrack_failure_reporting(wet_module):
         try:
             return original_prepare_input(self, *args, **kwargs)
         except Exception as exc:
-            self._ninja_last_step_error = f"{type(exc).__name__}: {exc}"
+            self._rake_last_step_error = f"{type(exc).__name__}: {exc}"
             raise
 
     webeyetrack_cls.step = patched_step
     webeyetrack_cls.prepare_input = patched_prepare_input
-    webeyetrack_cls._ninja_failure_patch = True
+    webeyetrack_cls._rake_failure_patch = True
 
 
 def _patch_webeyetrack_opencv_compat(wet_module):
     """Coerce WebEyeTrack preprocessing inputs to numeric arrays for OpenCV on Windows."""
-    if getattr(wet_module, "_ninja_opencv_patch", False):
+    if getattr(wet_module, "_rake_opencv_patch", False):
         return
     try:
         import numpy as np
@@ -321,7 +321,7 @@ def _patch_webeyetrack_opencv_compat(wet_module):
 
     model_based_module.obtain_eyepatch = patched_obtain_eyepatch
     wet_module.obtain_eyepatch = patched_obtain_eyepatch
-    wet_module._ninja_opencv_patch = True
+    wet_module._rake_opencv_patch = True
 
 
 def _can_use_legacy_face_mesh_fallback(wet_module, exc) -> bool:
@@ -386,7 +386,7 @@ def _patch_legacy_face_landmarker(wet_module):
     wet_module.vision.FaceLandmarker = LegacyFaceLandmarker
 
 
-class NinjaCursors(QtWidgets.QWidget):
+class RakeCursor(QtWidgets.QWidget):
     DEFAULT_CAMERA_INDEX = 0
     DEFAULT_SCREEN_WIDTH_CM = 34.0
     DEFAULT_SCREEN_HEIGHT_CM = 19.0
@@ -412,7 +412,6 @@ class NinjaCursors(QtWidgets.QWidget):
     CURSOR_RADIUS = 7.0
     ACTIVE_RADIUS = 12.0
     CLICK_EPSILON = 3.0
-    DEBUG_TEXT_REFRESH_SEC = 1.0
     GAZE_VALID_TTL_SEC = 0.6
     GAZE_DISPLAY_SMOOTHING = 0.68
     FIXATION_GATE_RADIUS_PX = 110.0
@@ -498,16 +497,16 @@ class NinjaCursors(QtWidgets.QWidget):
         if self.detector is not None:
             self.detector.overlay_window = self
             if self.detector.__class__.__name__ == "TargetFinder":
-                # Hiding/showing the Ninja overlay for every YOLO screenshot makes
+                # Hiding/showing the Rake overlay for every YOLO screenshot makes
                 # the eight cursors visibly flicker. Keep the overlay visible in
-                # free-use Ninja mode; controlled tasks use FakeTargetFinder.
+                # free-use Rake mode; controlled tasks use FakeTargetFinder.
                 self.detector.hide_overlay_during_capture = False
         self.cursor_filter = cursor_filter
         self.logger = logger
         self.camera_index = int(camera_index)
         screen = QtWidgets.QApplication.primaryScreen()
         if screen is None:
-            raise RuntimeError("Could not detect a primary screen for Ninja Cursors(gaze).")
+            raise RuntimeError("Could not detect a primary screen for Rake Cursor(gaze).")
         self.screen_width_cm, self.screen_height_cm = self.resolve_screen_size_cm(
             screen_width_cm,
             screen_height_cm,
@@ -515,7 +514,7 @@ class NinjaCursors(QtWidgets.QWidget):
         )
         self.rake_spacing = max(40.0, float(rake_spacing))
         self.gaze_smoothing = max(0.0, min(float(gaze_smoothing), 0.95))
-        # Fixed Ninja gaze manual correction.  Calibration supplies the affine
+        # Fixed Rake gaze manual correction.  Calibration supplies the affine
         # matrix; these four values are intentionally no longer editable from
         # the control panel.
         self.gaze_offset_x = float(self.DEFAULT_GAZE_OFFSET_X)
@@ -565,7 +564,6 @@ class NinjaCursors(QtWidgets.QWidget):
         self._pending_click_cursor_id = None
         self._last_gaze_status = "waiting for webcam"
         self._gaze_blocked_reason: str | None = None
-        self._last_gaze_debug_t = 0.0
         self._last_successful_gaze_t = 0.0
         self._last_gaze_velocity_t = 0.0
         self._last_gaze_velocity_point: Optional[tuple[float, float]] = None
@@ -634,11 +632,11 @@ class NinjaCursors(QtWidgets.QWidget):
 
         self._paint_timer = QtCore.QTimer(self)
         self._paint_timer.timeout.connect(self.update)
-        self._paint_timer.start(10)
+        self._paint_timer.start(25)
 
         self._gaze_timer = QtCore.QTimer(self)
         self._gaze_timer.timeout.connect(self._update_gaze)
-        self._gaze_timer.start(33)
+        self._gaze_timer.start(66)
 
         self._cursor_refresh_timer = QtCore.QTimer(self)
         self._cursor_refresh_timer.timeout.connect(self._refresh_real_cursor)
@@ -721,7 +719,7 @@ class NinjaCursors(QtWidgets.QWidget):
     def _is_raw_gaze_dropout(self, raw_norm_x: float, raw_norm_y: float) -> bool:
         if not math.isfinite(raw_norm_x) or not math.isfinite(raw_norm_y):
             return True
-        # With Ninja affine calibration active, WebEyeTrack occasionally emits
+        # With Rake affine calibration active, WebEyeTrack occasionally emits
         # exactly (0, 0) as a transient dropout.  In this coordinate space the
         # calibrated center is not (0, 0); treating that sentinel as gaze maps it
         # through affine to the bottom-right edge and makes the red marker jump.
@@ -767,7 +765,7 @@ class NinjaCursors(QtWidgets.QWidget):
             )
             return False
         correction_values = data.get("correction_values") or {}
-        matrix_value = correction_values.get("ninja_affine_matrix")
+        matrix_value = correction_values.get("rake_affine_matrix")
         if matrix_value is None:
             matrix_value = correction_values.get("affine_matrix")
         if matrix_value is None:
@@ -779,11 +777,18 @@ class NinjaCursors(QtWidgets.QWidget):
         return self._install_gaze_affine_matrix(f"file:{path}", matrix_value)
 
     def _log_runtime_debug(self, message: str):
-        text = f"[ninja] {message}"
-        print(text, flush=True)
+        text = f"[rake] {message}"
+        # Deliberately not printed to stdout: this fires roughly once a
+        # second for the whole session, and stdout is a pipe the parent
+        # process only drains between blocks (not continuously). Over a
+        # long block that fills the OS pipe buffer, and the next flush=True
+        # print() blocks the main thread forever inside the write() syscall
+        # -- freezing the whole overlay until the parent happens to drain
+        # it (or the participant force-quits). The file below already
+        # captures the same info for debugging.
         try:
             EyeCalibration.SAVE_DIR.mkdir(parents=True, exist_ok=True)
-            path = EyeCalibration.SAVE_DIR / "ninja_runtime_debug.log"
+            path = EyeCalibration.SAVE_DIR / "rake_runtime_debug.log"
             with path.open("a", encoding="utf-8") as fh:
                 fh.write(f"{time.time():.3f} {text}\n")
         except Exception:
@@ -807,7 +812,7 @@ class NinjaCursors(QtWidgets.QWidget):
     def _reset_runtime_debug_log(self):
         try:
             EyeCalibration.SAVE_DIR.mkdir(parents=True, exist_ok=True)
-            path = EyeCalibration.SAVE_DIR / "ninja_runtime_debug.log"
+            path = EyeCalibration.SAVE_DIR / "rake_runtime_debug.log"
             path.write_text("", encoding="utf-8")
         except Exception:
             pass
@@ -1333,11 +1338,15 @@ class NinjaCursors(QtWidgets.QWidget):
         )
 
     def _set_gaze_status(self, message: str):
+        # Only kept in memory for the on-screen debug overlay
+        # (_draw_debug_status). Deliberately NOT written to the runtime
+        # debug log file here: this is called roughly once a second for the
+        # whole session, and a synchronous open/write/close on every call is
+        # itself a source of main-thread stalls if disk I/O ever hiccups
+        # (Time Machine, cloud sync, etc). _log_runtime_debug is still used
+        # directly for the rarer, one-off diagnostic events (config, click,
+        # calibration errors) where that cost is negligible.
         self._last_gaze_status = message
-        now = time.time()
-        if now - self._last_gaze_debug_t >= self.DEBUG_TEXT_REFRESH_SEC:
-            self._log_runtime_debug(message)
-            self._last_gaze_debug_t = now
 
     def _write_fixation_status(self, status: str):
         if self._fixation_status_path is None:
@@ -1428,7 +1437,10 @@ class NinjaCursors(QtWidgets.QWidget):
             if status == TrackingStatus.SUCCESS and gaze_result is not None:
                 self._calibration.feed(gaze_result)
             else:
-                print(f"[calib] no gaze: status={status}, gaze_result={'None' if gaze_result is None else 'exists'}")
+                self._set_gaze_status(
+                    f"[calib] no gaze: status={status}, "
+                    f"gaze_result={'None' if gaze_result is None else 'exists'}"
+                )
             return
 
         norm_pog = getattr(gaze_result, "norm_pog", None) if gaze_result is not None else None
@@ -1514,7 +1526,7 @@ class NinjaCursors(QtWidgets.QWidget):
                 face_count = len(getattr(detection_results, "face_landmarks", []) or [])
             except Exception:
                 face_count = 0
-            detail = getattr(self._tracker, "_ninja_last_step_error", None)
+            detail = getattr(self._tracker, "_rake_last_step_error", None)
             suffix = f" detail={detail}" if detail else ""
             self._set_gaze_status(
                 f"not tracking status={status} faces={face_count} norm_pog={'yes' if norm_pog is not None else 'no'}{suffix}"
@@ -1585,7 +1597,7 @@ class NinjaCursors(QtWidgets.QWidget):
         painter.setBrush(QtGui.QColor(0, 0, 0, 150))
         painter.drawRoundedRect(box, 8.0, 8.0)
 
-        title = f"Ninja gaze: {self._last_gaze_status}"
+        title = f"Rake gaze: {self._last_gaze_status}"
         if self._active_point is not None:
             freshness = "recent" if self._gaze_is_recent() else "stale"
             if self._cursor_locked:
@@ -1632,7 +1644,7 @@ class NinjaCursors(QtWidgets.QWidget):
     def _log_mode_fields(self):
         calibration = self._calibration
         return {
-            "technique": "ninja cursors",
+            "technique": "rake cursor",
             "without_targetfinder": bool(self.detector is None),
             "use_calibration": bool(calibration is not None),
             "calibration_active": bool(calibration is not None and calibration.is_calibrating),
@@ -1946,7 +1958,7 @@ class NinjaCursors(QtWidgets.QWidget):
                 "cursor_locked": bool(self._cursor_locked),
                 "candidate_cursor_id": list(self._candidate_cursor_id) if self._candidate_cursor_id is not None else None,
                 "candidate_elapsed_ms": round(float(candidate_elapsed_ms), 3),
-                "ninja_spacing": round(float(self.rake_spacing), 3),
+                "rake_spacing": round(float(self.rake_spacing), 3),
                 "gaze_gain_x": round(float(self.gaze_gain_x), 3),
                 "gaze_gain_y": round(float(self.gaze_gain_y), 3),
                 "gaze_offset_x": round(float(self.gaze_offset_x), 3),
@@ -1961,7 +1973,7 @@ class NinjaCursors(QtWidgets.QWidget):
                     else "nearest_gaze_cursor_direct_click"
                 ),
                 "cursor_count": self.CURSOR_ROWS * self.CURSOR_COLS,
-                "ninja_layout": "ninja8_grid",
+                "rake_layout": "rake8_grid",
                 "detection_count": len(self.detector.get_detections()) if self.detector is not None else 0,
             }
             if self.cursor_filter is not None:
@@ -2184,7 +2196,7 @@ class NinjaCursors(QtWidgets.QWidget):
             self._calib_status_text = f"Calibrated! Error: {mean_error_px:.0f}px"
             correction_values = self._calibration.correction_values if self._calibration is not None else None
             if correction_values:
-                matrix_value = correction_values.get("ninja_affine_matrix")
+                matrix_value = correction_values.get("rake_affine_matrix")
                 if matrix_value is None:
                     matrix_value = correction_values.get("affine_matrix")
                 self._install_gaze_affine_matrix(
@@ -2299,7 +2311,7 @@ class NinjaCursors(QtWidgets.QWidget):
             target_for_log = self._pending_click_target
             cursor_id_for_log = self._pending_click_cursor_id
         else:
-            # For drags, mouseDown must start at the selected Ninja cursor, but
+            # For drags, mouseDown must start at the selected Rake cursor, but
             # mouseUp must follow the current orange cursor position at release.
             target_point = self._active_point or self._pending_click_point
             target_for_log = self._active_target or self._pending_click_target
@@ -2311,14 +2323,7 @@ class NinjaCursors(QtWidgets.QWidget):
         tx, ty = float(target_point[0]), float(target_point[1])
         Quartz.CGEventSetLocation(event, Quartz.CGPointMake(tx, ty))
         redirected = math.hypot(float(px) - tx, float(py) - ty) > self.CLICK_EPSILON
-        if event_type == Quartz.kCGEventLeftMouseDown:
-            print(
-                f"[ninja] retarget native click raw=({float(px):.1f}, {float(py):.1f}) "
-                f"active={self._active_cursor_id} effective=({tx:.1f}, {ty:.1f}) "
-                f"redirected={redirected} gaze_recent={self._gaze_is_recent()}",
-                flush=True,
-            )
-        elif event_type == Quartz.kCGEventLeftMouseUp:
+        if event_type == Quartz.kCGEventLeftMouseUp:
             if self.logger is not None:
                 self.logger.log_click(
                     raw=[round(float(px), 3), round(float(py), 3)],
@@ -2367,11 +2372,6 @@ class NinjaCursors(QtWidgets.QWidget):
 
         tx, ty = self._active_point
         redirected = math.hypot(float(orig_x) - tx, float(orig_y) - ty) > self.CLICK_EPSILON
-        print(
-            f"[ninja] click raw=({orig_x}, {orig_y}) active={self._active_cursor_id} "
-            f"effective=({tx:.1f}, {ty:.1f}) redirected={redirected} gaze_recent={self._gaze_is_recent()}",
-            flush=True,
-        )
 
         self._send_click(orig_x, orig_y, tx, ty)
         if self.logger is not None:
@@ -2393,21 +2393,15 @@ class NinjaCursors(QtWidgets.QWidget):
         try:
             if sys.platform == "darwin":
                 self._send_macos_click(float(orig_x), float(orig_y), float(tx), float(ty))
-                backend = "quartz"
             else:
                 pyautogui.mouseUp(button="left")
                 pyautogui.moveTo(tx, ty)
                 pyautogui.click()
                 pyautogui.moveTo(orig_x, orig_y)
-                backend = "pyautogui"
-            print(
-                f"[ninja] sent click backend={backend} effective=({float(tx):.1f}, {float(ty):.1f})",
-                flush=True,
-            )
         except pyautogui.FailSafeException:
-            print("[ninja] click skipped by pyautogui fail-safe", flush=True)
+            print("[rake] click skipped by pyautogui fail-safe", flush=True)
         except Exception as exc:
-            print(f"[ninja] click send error: {type(exc).__name__}: {exc}", flush=True)
+            print(f"[rake] click send error: {type(exc).__name__}: {exc}", flush=True)
         finally:
             self._hide_system_cursor_if_needed()
             self._simulating_click = False
@@ -2443,17 +2437,17 @@ class NinjaCursors(QtWidgets.QWidget):
         post_mouse_event(Quartz.kCGEventMouseMoved, orig_x, orig_y)
 
 
-def ninja_cursors(detector: Optional[TargetFinder], cursor_filter=None, logger=None, **kwargs):
+def rake_cursor(detector: Optional[TargetFinder], cursor_filter=None, logger=None, **kwargs):
     install_qt_crash_guard()
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
-    overlay = NinjaCursors(detector, cursor_filter=cursor_filter, logger=logger, **kwargs)
+    overlay = RakeCursor(detector, cursor_filter=cursor_filter, logger=logger, **kwargs)
     overlay.show()
     raise_macos_window_above_system_ui(overlay, level_offset=1)
     if overlay._should_hide_system_cursor_for_state():
         hide_cursor_everywhere()
     else:
         restore_default_cursors()
-    _emit_ninja_event(
+    _emit_rake_event(
         "ready",
         screen_width_px=int(overlay._screen_rect.width()),
         screen_height_px=int(overlay._screen_rect.height()),
@@ -2477,6 +2471,20 @@ def ninja_cursors(detector: Optional[TargetFinder], cursor_filter=None, logger=N
             getattr(signal, "SIGTERM", None),
             getattr(signal, "SIGBREAK", None),
         } else "signal_interrupt"
+        # Release the camera synchronously, right here, instead of only via
+        # the queued stop_and_quit below. When the parent process is tearing
+        # down every preloaded technique at once (stop_preloaded_techniques),
+        # this process's Qt event loop can be too busy to get to the queued
+        # call within the parent's short SIGTERM->SIGKILL grace window; a
+        # SIGKILL skips cv2.VideoCapture.release() entirely, and macOS then
+        # takes tens of seconds to reclaim the device on its own -- which is
+        # exactly what the *next* rake_cursor process hangs on when it
+        # tries to open the camera. Releasing it here removes that race.
+        try:
+            if overlay._capture is not None:
+                overlay._capture.release()
+        except Exception:
+            pass
         QtCore.QMetaObject.invokeMethod(
             overlay,
             "stop_and_quit",
@@ -2496,7 +2504,7 @@ def ninja_cursors(detector: Optional[TargetFinder], cursor_filter=None, logger=N
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Launch the Ninja Cursors(gaze) overlay")
+    parser = argparse.ArgumentParser(description="Launch the Rake Cursor(gaze) overlay")
     parser.add_argument("--model-path", default=None, help="Path to the YOLO model .pt file")
     parser.add_argument("--change-thresh", type=int, default=100, help="Threshold for detecting screen changes")
     parser.add_argument("--capture-interval", type=float, default=1 / 30, help="Interval between screen captures (in seconds)")
@@ -2505,26 +2513,26 @@ def main():
     add_filter_arguments(parser)
     parser.add_argument("--log-file", default=None, help="Optional JSONL log file path")
     parser.add_argument("--log-cursor-hz", type=float, default=30.0, help="Cursor sampling rate for logging")
-    parser.add_argument("--camera-index", type=int, default=NinjaCursors.DEFAULT_CAMERA_INDEX, help="Webcam index used for gaze tracking")
+    parser.add_argument("--camera-index", type=int, default=RakeCursor.DEFAULT_CAMERA_INDEX, help="Webcam index used for gaze tracking")
     parser.add_argument("--screen-width-cm", type=float, default=None, help="Approximate physical screen width in centimeters; auto-detected when omitted")
     parser.add_argument("--screen-height-cm", type=float, default=None, help="Approximate physical screen height in centimeters; auto-detected when omitted")
-    parser.add_argument("--ninja-spacing", dest="ninja_spacing", type=float, default=NinjaCursors.DEFAULT_RAKE_SPACING, help="Center-to-center spacing in pixels between neighboring cursors in the 8-cursor Ninja layout")
-    parser.add_argument("--gaze-smoothing", type=float, default=NinjaCursors.DEFAULT_GAZE_SMOOTHING, help="Smoothing factor applied to the gaze point (0 = no smoothing, higher = steadier gaze)")
-    parser.add_argument("--gaze-offset-x", type=float, default=NinjaCursors.DEFAULT_GAZE_OFFSET_X, help="Horizontal pixel offset applied to the webcam-estimated gaze point before cursor selection")
-    parser.add_argument("--gaze-offset-y", type=float, default=NinjaCursors.DEFAULT_GAZE_OFFSET_Y, help="Vertical pixel offset applied to the webcam-estimated gaze point before cursor selection")
-    parser.add_argument("--gaze-gain-x", type=float, default=NinjaCursors.DEFAULT_GAZE_GAIN_X, help="Horizontal gain applied around the screen center before gaze offset and cursor selection")
-    parser.add_argument("--gaze-gain-y", type=float, default=NinjaCursors.DEFAULT_GAZE_GAIN_Y, help="Vertical gain applied around the screen center before gaze offset and cursor selection")
+    parser.add_argument("--rake-spacing", dest="rake_spacing", type=float, default=RakeCursor.DEFAULT_RAKE_SPACING, help="Center-to-center spacing in pixels between neighboring cursors in the 8-cursor Rake layout")
+    parser.add_argument("--gaze-smoothing", type=float, default=RakeCursor.DEFAULT_GAZE_SMOOTHING, help="Smoothing factor applied to the gaze point (0 = no smoothing, higher = steadier gaze)")
+    parser.add_argument("--gaze-offset-x", type=float, default=RakeCursor.DEFAULT_GAZE_OFFSET_X, help="Horizontal pixel offset applied to the webcam-estimated gaze point before cursor selection")
+    parser.add_argument("--gaze-offset-y", type=float, default=RakeCursor.DEFAULT_GAZE_OFFSET_Y, help="Vertical pixel offset applied to the webcam-estimated gaze point before cursor selection")
+    parser.add_argument("--gaze-gain-x", type=float, default=RakeCursor.DEFAULT_GAZE_GAIN_X, help="Horizontal gain applied around the screen center before gaze offset and cursor selection")
+    parser.add_argument("--gaze-gain-y", type=float, default=RakeCursor.DEFAULT_GAZE_GAIN_Y, help="Vertical gain applied around the screen center before gaze offset and cursor selection")
     parser.add_argument("--gaze-gain", type=float, default=2.0, help="Deprecated compatibility option from the old local-direction cursor version; ignored by this 8-cursor version")
-    parser.add_argument("--selection-hold", type=float, default=NinjaCursors.DEFAULT_SELECTION_HOLD, help="Seconds gaze must remain on the same cursor before it locks automatically")
+    parser.add_argument("--selection-hold", type=float, default=RakeCursor.DEFAULT_SELECTION_HOLD, help="Seconds gaze must remain on the same cursor before it locks automatically")
     parser.add_argument("--lock-on-dwell", action="store_true", help="Require gaze dwell locking before clicks. By default, the currently active cursor can be clicked immediately.")
-    parser.add_argument("--lock-on-key", action="store_true", help=f"Require pressing {NinjaCursors.LOCK_KEY_NAME} to lock the current candidate cursor (turns green) before clicking, instead of clicking the active cursor immediately or dwell-locking.")
+    parser.add_argument("--lock-on-key", action="store_true", help=f"Require pressing {RakeCursor.LOCK_KEY_NAME} to lock the current candidate cursor (turns green) before clicking, instead of clicking the active cursor immediately or dwell-locking.")
     parser.add_argument("--hide-gaze-point", action="store_true", help="Hide the red on-screen gaze feedback marker")
-    parser.add_argument("--hide-debug-status", action="store_true", help="Hide the on-screen Ninja gaze tracking status overlay")
-    parser.add_argument("--snap-system-cursor-to-active", action="store_true", help="Move the native system cursor to the currently active Ninja cursor to reduce visual mismatch on macOS")
+    parser.add_argument("--hide-debug-status", action="store_true", help="Hide the on-screen Rake gaze tracking status overlay")
+    parser.add_argument("--snap-system-cursor-to-active", action="store_true", help="Move the native system cursor to the currently active Rake cursor to reduce visual mismatch on macOS")
     parser.add_argument("--calib-points", type=int, choices=[5, 9, 13], default=5, help="Number of calibration points (5, 9, or 13)")
     parser.add_argument("--auto-calibrate", action="store_true", help="Start eye calibration immediately on launch")
     parser.add_argument("--auto-calibrate-delay", type=float, default=1.5, help="Seconds to wait before automatic eye calibration starts")
-    parser.add_argument("--without-targetfinder", action="store_true", help="Run Ninja Cursors(gaze) without TargetFinder detection or target highlighting")
+    parser.add_argument("--without-targetfinder", action="store_true", help="Run Rake Cursor(gaze) without TargetFinder detection or target highlighting")
     parser.add_argument("--experiment-control-file", default=None, help="Optional control file used by the experimental task to pause/resume cursor movement")
     parser.add_argument("--annotation-control-file", default=None, help="Use controlled-task annotations instead of live YOLO detection")
     parser.add_argument("--disable-keyboard-quit", action="store_true", help="Disable overlay-level q/Esc quit shortcuts; controlled experiments handle quitting")
@@ -2540,7 +2548,7 @@ def main():
         args.model_path = os.path.join(here, "yolo26s_1280.pt")
 
     _app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
-    args.screen_width_cm, args.screen_height_cm = NinjaCursors.resolve_screen_size_cm(
+    args.screen_width_cm, args.screen_height_cm = RakeCursor.resolve_screen_size_cm(
         args.screen_width_cm,
         args.screen_height_cm,
     )
@@ -2554,7 +2562,7 @@ def main():
     logger = SessionLogger(args.log_file, cursor_hz=args.log_cursor_hz) if args.log_file else None
     if logger is not None:
         logger.log_session_start(
-            technique="ninja cursors",
+            technique="rake cursor",
             filter_name=args.filter,
             **filter_kwargs_from_args(args),
             model_path=args.model_path,
@@ -2565,16 +2573,16 @@ def main():
             camera_index=args.camera_index,
             screen_width_cm=args.screen_width_cm,
             screen_height_cm=args.screen_height_cm,
-            ninja_spacing=args.ninja_spacing,
+            rake_spacing=args.rake_spacing,
             gaze_smoothing=args.gaze_smoothing,
             gaze_offset_x=args.gaze_offset_x,
             gaze_offset_y=args.gaze_offset_y,
             gaze_gain_x=args.gaze_gain_x,
             gaze_gain_y=args.gaze_gain_y,
-            effective_gaze_offset_x=NinjaCursors.DEFAULT_GAZE_OFFSET_X,
-            effective_gaze_offset_y=NinjaCursors.DEFAULT_GAZE_OFFSET_Y,
-            effective_gaze_gain_x=NinjaCursors.DEFAULT_GAZE_GAIN_X,
-            effective_gaze_gain_y=NinjaCursors.DEFAULT_GAZE_GAIN_Y,
+            effective_gaze_offset_x=RakeCursor.DEFAULT_GAZE_OFFSET_X,
+            effective_gaze_offset_y=RakeCursor.DEFAULT_GAZE_OFFSET_Y,
+            effective_gaze_gain_x=RakeCursor.DEFAULT_GAZE_GAIN_X,
+            effective_gaze_gain_y=RakeCursor.DEFAULT_GAZE_GAIN_Y,
             calibration_file=str(EyeCalibration.last_calibration_path()),
             failed_calibration_file=str(EyeCalibration.last_failed_calibration_path()),
             selection_hold=args.selection_hold,
@@ -2585,8 +2593,8 @@ def main():
             without_targetfinder=bool(args.without_targetfinder),
             detection_source="annotations" if args.annotation_control_file else ("none" if args.without_targetfinder else "yolo"),
             annotation_control_file=args.annotation_control_file,
-            ninja_layout="ninja8_grid",
-            cursor_count=NinjaCursors.CURSOR_ROWS * NinjaCursors.CURSOR_COLS,
+            rake_layout="rake8_grid",
+            cursor_count=RakeCursor.CURSOR_ROWS * RakeCursor.CURSOR_COLS,
             selection_mode=(
                 "nearest_gaze_cursor_with_dwell_lock"
                 if args.lock_on_dwell
@@ -2598,14 +2606,14 @@ def main():
         )
         if det is not None:
             det.set_callback(lambda dets, added, removed, _frame: logger.log_detection_change(dets, added, removed))
-    ninja_cursors(
+    rake_cursor(
         det,
         cursor_filter=cursor_filter,
         logger=logger,
         camera_index=args.camera_index,
         screen_width_cm=args.screen_width_cm,
         screen_height_cm=args.screen_height_cm,
-        rake_spacing=args.ninja_spacing,
+        rake_spacing=args.rake_spacing,
         gaze_smoothing=args.gaze_smoothing,
         gaze_offset_x=args.gaze_offset_x,
         gaze_offset_y=args.gaze_offset_y,

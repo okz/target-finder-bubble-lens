@@ -46,7 +46,7 @@ except Exception:  # pragma: no cover - targetfinder deps may be unavailable.
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DATA_DIR = Path("/Users/tangxinqi/Desktop/stage/data/web")
+DEFAULT_DATA_DIR = PROJECT_ROOT.parent.parent / "data" / "web"
 # Kept in sync with fitts_distractors_task.py's SYNTHETIC_ID_VALUES/DENSITY_VALUES (that
 # module imports FROM this one, so these can't be imported the other way without a cycle)
 # so the realistic and synthetic Fitts tasks sample from the same (ID, density) condition
@@ -62,21 +62,21 @@ TECHNIQUES = [
     "bubble",
     "semantic",
     "dynaspot",
-    "ninja_cursors",
+    "rake_cursor",
 ]
 EXPERIMENT_TECHNIQUES = [
     "mouse",
     "bubble",
     "dynaspot",
     "semantic",
-    "ninja_cursors",
+    "rake_cursor",
 ]
 TECHNIQUE_MODULES = {
     "targetfinder": "target_finder_toolkit.targetfinder",
     "bubble": "target_finder_toolkit.bubblecursor",
     "semantic": "target_finder_toolkit.semanticpointing",
     "dynaspot": "target_finder_toolkit.dynaspot",
-    "ninja_cursors": "target_finder_toolkit.ninjacursors",
+    "rake_cursor": "target_finder_toolkit.rakecursor",
 }
 IN_PROCESS_TASK_TECHNIQUES: set[str] = set()
 DEFAULT_CHANGE_THRESH = 100
@@ -87,15 +87,15 @@ DEFAULT_DYNASPOT_MIN_SPEED = 100.0
 DEFAULT_DYNASPOT_SPOT_WIDTH = 128.0
 DEFAULT_DYNASPOT_LAG = 0.300
 DEFAULT_DYNASPOT_REDUCE_TIME = 0.500
-DEFAULT_NINJA_CAMERA_INDEX = 0
-DEFAULT_NINJA_SPACING = 350.0
-DEFAULT_NINJA_GAZE_SMOOTHING = 0.35
-DEFAULT_NINJA_GAZE_GAIN_X = 1.0
-DEFAULT_NINJA_GAZE_GAIN_Y = 1.0
-DEFAULT_NINJA_GAZE_OFFSET_X = -40.0
-DEFAULT_NINJA_GAZE_OFFSET_Y = -50.0
-DEFAULT_NINJA_SELECTION_HOLD = 2.0
-NINJA_CALIBRATION_MAX_RETRIES = 2
+DEFAULT_RAKE_CAMERA_INDEX = 0
+DEFAULT_RAKE_SPACING = 350.0
+DEFAULT_RAKE_GAZE_SMOOTHING = 0.35
+DEFAULT_RAKE_GAZE_GAIN_X = 1.0
+DEFAULT_RAKE_GAZE_GAIN_Y = 1.0
+DEFAULT_RAKE_GAZE_OFFSET_X = -40.0
+DEFAULT_RAKE_GAZE_OFFSET_Y = -50.0
+DEFAULT_RAKE_SELECTION_HOLD = 2.0
+RAKE_CALIBRATION_MAX_RETRIES = 2
 COUNTDOWN_STEP_SEC = 0.5
 
 
@@ -598,44 +598,44 @@ def build_technique_command(
             str(args.dynaspot_reduce_time),
         ]
         cmd.append("--include-text-targets")
-    elif args.technique == "ninja_cursors":
+    elif args.technique == "rake_cursor":
         cmd += [
             "--camera-index",
-            str(args.ninja_camera_index),
-            "--ninja-spacing",
-            str(args.ninja_spacing),
+            str(args.rake_camera_index),
+            "--rake-spacing",
+            str(args.rake_spacing),
             "--gaze-smoothing",
-            str(args.ninja_gaze_smoothing),
+            str(args.rake_gaze_smoothing),
             "--gaze-gain-x",
-            str(args.ninja_gaze_gain_x),
+            str(args.rake_gaze_gain_x),
             "--gaze-gain-y",
-            str(args.ninja_gaze_gain_y),
+            str(args.rake_gaze_gain_y),
             "--gaze-offset-x",
-            str(args.ninja_gaze_offset_x),
+            str(args.rake_gaze_offset_x),
             "--gaze-offset-y",
-            str(args.ninja_gaze_offset_y),
+            str(args.rake_gaze_offset_y),
             "--selection-hold",
-            str(args.ninja_selection_hold),
+            str(args.rake_selection_hold),
             "--calib-points",
-            str(args.ninja_calib_points),
+            str(args.rake_calib_points),
         ]
-        if args.ninja_screen_width_cm is not None:
-            cmd += ["--screen-width-cm", str(args.ninja_screen_width_cm)]
-        if args.ninja_screen_height_cm is not None:
-            cmd += ["--screen-height-cm", str(args.ninja_screen_height_cm)]
-        if args.ninja_lock_on_dwell:
+        if args.rake_screen_width_cm is not None:
+            cmd += ["--screen-width-cm", str(args.rake_screen_width_cm)]
+        if args.rake_screen_height_cm is not None:
+            cmd += ["--screen-height-cm", str(args.rake_screen_height_cm)]
+        if args.rake_lock_on_dwell:
             cmd.append("--lock-on-dwell")
-        if getattr(args, "ninja_lock_on_key", False):
+        if getattr(args, "rake_lock_on_key", False):
             cmd.append("--lock-on-key")
-        if args.ninja_hide_gaze_point:
+        if args.rake_hide_gaze_point:
             cmd.append("--hide-gaze-point")
-        if getattr(args, "ninja_hide_debug_status", False):
+        if getattr(args, "rake_hide_debug_status", False):
             cmd.append("--hide-debug-status")
-        if getattr(args, "ninja_snap_system_cursor_to_active", False):
+        if getattr(args, "rake_snap_system_cursor_to_active", False):
             cmd.append("--snap-system-cursor-to-active")
-        if args.ninja_auto_calibrate:
+        if args.rake_auto_calibrate:
             cmd.append("--auto-calibrate")
-        if args.ninja_without_targetfinder:
+        if args.rake_without_targetfinder:
             cmd.append("--without-targetfinder")
 
     return cmd
@@ -653,6 +653,15 @@ def point_to_bbox_distance(x: float, y: float, bbox: tuple[float, float, float, 
     dx = max(0.0, abs(x - cx) - bw / 2.0)
     dy = max(0.0, abs(y - cy) - bh / 2.0)
     return math.hypot(dx, dy)
+
+
+# Clicks a few pixels outside the drawn target boundary still register as
+# hits, same rationale as the synthetic Fitts task's CLICK_HIT_TOLERANCE_PX:
+# real click coordinates carry a bit of unavoidable pixel-level jitter that
+# users can't perceive, so a strictly literal bbox check punishes clicks
+# that visually landed on the target. Defined in on-screen (widget) pixels
+# since that's the space the participant actually clicks in.
+CLICK_HIT_TOLERANCE_PX = 8.0
 
 
 def target_to_log_dict(target: TargetAnnotation | None) -> dict | None:
@@ -1108,7 +1117,7 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
         technique_command: list[str] | None = None,
         technique_log_file: Path | None = None,
         annotation_control_file: Path | None = None,
-        ninja_control_file: Path | None = None,
+        rake_control_file: Path | None = None,
         external_technique_active: bool = False,
         cleanup_control_files: bool = True,
         technique_start_delay_sec: float = 3.0,
@@ -1149,9 +1158,9 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
         self._session_ended = False
         self._process_output_buffer = ""
         self._process_output_lines: list[str] = []
-        self._waiting_for_ninja_calibration = False
-        self._waiting_for_ninja_fixation = False
-        self._ninja_calibration_retries_left = NINJA_CALIBRATION_MAX_RETRIES
+        self._waiting_for_rake_calibration = False
+        self._waiting_for_rake_fixation = False
+        self._rake_calibration_retries_left = RAKE_CALIBRATION_MAX_RETRIES
         self._pending_external_click_payload: dict | None = None
         self._exit_code = 0
         self._aborting = False
@@ -1159,14 +1168,14 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
         self._pretrial_cursor_lock_active = False
         self.mouse_decoupled = False
         self.technique_name = self.trials[0].technique if self.trials else None
-        self.ninja_control_file: Path | None = Path(ninja_control_file) if ninja_control_file else None
-        if self.technique_command is not None and self._uses_ninja_cursors():
-            if self.ninja_control_file is None:
-                self.ninja_control_file = self.log_file.with_suffix(".ninja_control")
-            self.technique_command += ["--experiment-control-file", str(self.ninja_control_file)]
-            self._set_ninja_control_state("paused")
-        elif self.ninja_control_file is not None:
-            self._set_ninja_control_state("paused")
+        self.rake_control_file: Path | None = Path(rake_control_file) if rake_control_file else None
+        if self.technique_command is not None and self._uses_rake_cursor():
+            if self.rake_control_file is None:
+                self.rake_control_file = self.log_file.with_suffix(".rake_control")
+            self.technique_command += ["--experiment-control-file", str(self.rake_control_file)]
+            self._set_rake_control_state("paused")
+        elif self.rake_control_file is not None:
+            self._set_rake_control_state("paused")
 
         self.setWindowTitle("Experimental task" if is_english(self.language) else "Tache experimentale")
         self.resize(1200, 820)
@@ -1194,9 +1203,9 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
         self.technique_watch_timer.setInterval(100)
         self.technique_watch_timer.timeout.connect(self._check_technique_process)
 
-        self._ninja_fixation_poll_timer = QtCore.QTimer(self)
-        self._ninja_fixation_poll_timer.setInterval(30)
-        self._ninja_fixation_poll_timer.timeout.connect(self._check_ninja_fixation_gate)
+        self._rake_fixation_poll_timer = QtCore.QTimer(self)
+        self._rake_fixation_poll_timer.setInterval(30)
+        self._rake_fixation_poll_timer.timeout.connect(self._check_rake_fixation_gate)
 
         self.external_click_timer = QtCore.QTimer(self)
         self.external_click_timer.setSingleShot(True)
@@ -1256,7 +1265,7 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
         self.external_click_timer.stop()
         self._stop_technique_process(wait=not self._aborting)
         self._set_mouse_association(True)
-        self._cleanup_ninja_control_file()
+        self._cleanup_rake_control_file()
         self._cleanup_annotation_control_file()
         self._end_session("window_close")
         app = QtWidgets.QApplication.instance()
@@ -1298,7 +1307,7 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
         self.external_click_timer.stop()
         self._stop_technique_process(wait=False)
         self._set_mouse_association(True)
-        self._cleanup_ninja_control_file()
+        self._cleanup_rake_control_file()
         self._cleanup_annotation_control_file()
         self._end_session(reason)
         app = QtWidgets.QApplication.instance()
@@ -1351,9 +1360,9 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
     def _technique_command_has(self, value: str) -> bool:
         return bool(self.technique_command and value in self.technique_command)
 
-    def _should_wait_for_ninja_calibration(self) -> bool:
+    def _should_wait_for_rake_calibration(self) -> bool:
         return (
-            self._technique_command_has("target_finder_toolkit.ninjacursors")
+            self._technique_command_has("target_finder_toolkit.rakecursor")
             and self._technique_command_has("--auto-calibrate")
         )
 
@@ -1388,7 +1397,7 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
             self._handle_technique_output_line(line)
 
     def _handle_technique_output_line(self, line: str):
-        prefix = "__NINJA_CALIB__ "
+        prefix = "__RAKE_CALIB__ "
         if not line.startswith(prefix):
             return
         try:
@@ -1396,42 +1405,42 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
         except Exception:
             return
         event = payload.get("event")
-        self._write_event({"type": "ninja_calibration_event", **payload})
+        self._write_event({"type": "rake_calibration_event", **payload})
         if event == "started":
             points = payload.get("num_points")
             suffix = f" ({points} points)" if points else ""
             self._set_message_text(
-                f"{'Ninja Cursors calibration' if is_english(self.language) else 'Calibration Ninja Cursors'}{suffix}...",
+                f"{'Rake Cursor calibration' if is_english(self.language) else 'Calibration Rake Cursor'}{suffix}...",
                 style="center",
             )
             return
         if event not in {"calibrated", "failed", "cancelled"}:
             return
-        if not self._waiting_for_ninja_calibration:
+        if not self._waiting_for_rake_calibration:
             return
         if event == "calibrated":
-            self._waiting_for_ninja_calibration = False
+            self._waiting_for_rake_calibration = False
             self._set_message_text("Calibration complete" if is_english(self.language) else "Calibration terminee", style="center")
             QtCore.QTimer.singleShot(900, self._show_trial_intro)
         elif event == "failed":
-            if self._ninja_calibration_retries_left > 0:
-                self._ninja_calibration_retries_left -= 1
+            if self._rake_calibration_retries_left > 0:
+                self._rake_calibration_retries_left -= 1
                 self._set_message_text(
                     "Calibration failed, retrying..." if is_english(self.language) else "Calibration echouee, nouvel essai...",
                     style="center",
                 )
-                self._write_event({"type": "ninja_calibration_retry", "event": event})
-                QtCore.QTimer.singleShot(1200, self._retry_ninja_calibration)
+                self._write_event({"type": "rake_calibration_retry", "event": event})
+                QtCore.QTimer.singleShot(1200, self._retry_rake_calibration)
                 return
-            self._waiting_for_ninja_calibration = False
+            self._waiting_for_rake_calibration = False
             self._set_message_text("Calibration failed" if is_english(self.language) else "Calibration echouee", style="center")
-            self._write_event({"type": "ninja_calibration_blocked_experiment", "event": event})
-            QtCore.QTimer.singleShot(1200, lambda: self._abort_experiment("ninja_calibration_failed"))
+            self._write_event({"type": "rake_calibration_blocked_experiment", "event": event})
+            QtCore.QTimer.singleShot(1200, lambda: self._abort_experiment("rake_calibration_failed"))
         else:
-            self._waiting_for_ninja_calibration = False
+            self._waiting_for_rake_calibration = False
             self._set_message_text("Calibration cancelled" if is_english(self.language) else "Calibration annulee", style="center")
-            self._write_event({"type": "ninja_calibration_blocked_experiment", "event": event})
-            QtCore.QTimer.singleShot(1200, lambda: self._abort_experiment("ninja_calibration_cancelled"))
+            self._write_event({"type": "rake_calibration_blocked_experiment", "event": event})
+            QtCore.QTimer.singleShot(1200, lambda: self._abort_experiment("rake_calibration_cancelled"))
 
     def _check_technique_process(self):
         if self.technique_process is None:
@@ -1454,16 +1463,16 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
             close_windows_process_job(self.technique_process)
             self.technique_process = None
         self.technique_watch_timer.stop()
-        self._ninja_fixation_poll_timer.stop()
-        self._waiting_for_ninja_fixation = False
+        self._rake_fixation_poll_timer.stop()
+        self._waiting_for_rake_fixation = False
         self._set_status_text(
             f"{self._status_text()} | "
             f"{'Technique stopped' if is_english(self.language) else 'Technique arretee'} ({exit_code})"
         )
-        if self._waiting_for_ninja_calibration:
-            self._waiting_for_ninja_calibration = False
-            self._write_event({"type": "ninja_calibration_blocked_experiment", "event": "process_exited"})
-            self._abort_experiment("ninja_exited_during_calibration")
+        if self._waiting_for_rake_calibration:
+            self._waiting_for_rake_calibration = False
+            self._write_event({"type": "rake_calibration_blocked_experiment", "event": "process_exited"})
+            self._abort_experiment("rake_exited_during_calibration")
             return
         # Technique process died outside the calibration wait; end the
         # experiment instead of continuing against a dead technique.
@@ -1471,8 +1480,8 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
             self._abort_experiment("technique_exited_unexpectedly")
 
     def _stop_technique_process(self, *, wait: bool = True):
-        self._ninja_fixation_poll_timer.stop()
-        self._waiting_for_ninja_fixation = False
+        self._rake_fixation_poll_timer.stop()
+        self._waiting_for_rake_fixation = False
         if self.technique_process is None:
             self.technique_watch_timer.stop()
             restore_default_cursors()
@@ -1527,7 +1536,7 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
         return False
 
     def _unlock_pretrial_cursor(self):
-        if self._uses_ninja_cursors():
+        if self._uses_rake_cursor():
             self.cursor_lock_timer.stop()
             return
         self._set_cursor_to_start()
@@ -1550,9 +1559,9 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
             return screen.geometry().center()
         return self.mapToGlobal(self.rect().center())
 
-    def _uses_ninja_cursors(self) -> bool:
-        return self.technique_name == "ninja_cursors" or self._technique_command_has(
-            "target_finder_toolkit.ninjacursors"
+    def _uses_rake_cursor(self) -> bool:
+        return self.technique_name == "rake_cursor" or self._technique_command_has(
+            "target_finder_toolkit.rakecursor"
         )
 
     def _uses_semantic_pointing(self) -> bool:
@@ -1560,84 +1569,84 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
             "target_finder_toolkit.semanticpointing"
         )
 
-    def _set_ninja_control_state(self, state: str):
-        if self.ninja_control_file is None:
+    def _set_rake_control_state(self, state: str):
+        if self.rake_control_file is None:
             return
         try:
-            self.ninja_control_file.write_text(state, encoding="utf-8")
-            self._write_event({"type": "ninja_control_state", "state": state})
+            self.rake_control_file.write_text(state, encoding="utf-8")
+            self._write_event({"type": "rake_control_state", "state": state})
         except OSError as exc:
-            self._write_event({"type": "ninja_control_error", "error": str(exc)})
+            self._write_event({"type": "rake_control_error", "error": str(exc)})
 
-    def _ninja_pretrial_state(self) -> str:
-        return self._ninja_state_at_start("ready")
+    def _rake_pretrial_state(self) -> str:
+        return self._rake_state_at_start("ready")
 
-    def _ninja_active_state(self) -> str:
-        return self._ninja_state_at_start("active")
+    def _rake_active_state(self) -> str:
+        return self._rake_state_at_start("active")
 
-    def _ninja_calibrate_state(self) -> str:
-        return self._ninja_state_at_start("calibrate")
+    def _rake_calibrate_state(self) -> str:
+        return self._rake_state_at_start("calibrate")
 
-    def _ninja_fixation_state(self) -> str:
-        return self._ninja_state_at_start("fixate")
+    def _rake_fixation_state(self) -> str:
+        return self._rake_state_at_start("fixate")
 
-    def _ninja_fixation_status_path(self) -> Path | None:
-        if self.ninja_control_file is None:
+    def _rake_fixation_status_path(self) -> Path | None:
+        if self.rake_control_file is None:
             return None
-        return Path(str(self.ninja_control_file) + ".fixation")
+        return Path(str(self.rake_control_file) + ".fixation")
 
-    def _start_ninja_fixation_wait(self):
-        status_path = self._ninja_fixation_status_path()
+    def _start_rake_fixation_wait(self):
+        status_path = self._rake_fixation_status_path()
         if status_path is not None:
             status_path.unlink(missing_ok=True)
-        self._waiting_for_ninja_fixation = True
-        self._set_ninja_control_state(self._ninja_fixation_state())
+        self._waiting_for_rake_fixation = True
+        self._set_rake_control_state(self._rake_fixation_state())
         self._set_message_text(
             "Look at the center of the screen..." if is_english(self.language) else "Regardez le centre de l'écran...",
             style="center",
         )
-        self._ninja_fixation_poll_timer.start()
+        self._rake_fixation_poll_timer.start()
 
-    def _check_ninja_fixation_gate(self):
-        if not self._waiting_for_ninja_fixation:
-            self._ninja_fixation_poll_timer.stop()
+    def _check_rake_fixation_gate(self):
+        if not self._waiting_for_rake_fixation:
+            self._rake_fixation_poll_timer.stop()
             return
-        status_path = self._ninja_fixation_status_path()
+        status_path = self._rake_fixation_status_path()
         try:
             status = status_path.read_text(encoding="utf-8").strip() if status_path else ""
         except OSError:
             status = ""
         if status not in {"achieved", "timeout"}:
             return
-        self._ninja_fixation_poll_timer.stop()
-        self._waiting_for_ninja_fixation = False
-        self._write_event({"type": "ninja_fixation_gate_event", "event": status})
-        self._set_ninja_control_state(self._ninja_active_state())
+        self._rake_fixation_poll_timer.stop()
+        self._waiting_for_rake_fixation = False
+        self._write_event({"type": "rake_fixation_gate_event", "event": status})
+        self._set_rake_control_state(self._rake_active_state())
         self._finish_begin_click_phase()
 
-    def _retry_ninja_calibration(self):
+    def _retry_rake_calibration(self):
         if self.technique_process is None or self.technique_process.poll() is not None:
-            self._waiting_for_ninja_calibration = False
-            self._abort_experiment("ninja_calibration_failed")
+            self._waiting_for_rake_calibration = False
+            self._abort_experiment("rake_calibration_failed")
             return
-        self._waiting_for_ninja_calibration = True
+        self._waiting_for_rake_calibration = True
         self._set_message_text(
-            "Recalibrating Ninja Cursors..." if is_english(self.language) else "Nouvelle calibration de Ninja Cursors...",
+            "Recalibrating Rake Cursor..." if is_english(self.language) else "Nouvelle calibration de Rake Cursor...",
             style="center",
         )
-        self._set_ninja_control_state(self._ninja_calibrate_state())
+        self._set_rake_control_state(self._rake_calibrate_state())
 
-    def _ninja_state_at_start(self, state: str) -> str:
-        if not self._uses_ninja_cursors():
+    def _rake_state_at_start(self, state: str) -> str:
+        if not self._uses_rake_cursor():
             return "paused"
         center = self._screen_center_global()
         return f"{state} {int(center.x())} {int(center.y())}"
 
-    def _cleanup_ninja_control_file(self):
-        if self.ninja_control_file is None or not self.cleanup_control_files:
+    def _cleanup_rake_control_file(self):
+        if self.rake_control_file is None or not self.cleanup_control_files:
             return
         try:
-            self.ninja_control_file.unlink(missing_ok=True)
+            self.rake_control_file.unlink(missing_ok=True)
         except OSError:
             pass
 
@@ -1721,7 +1730,7 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
             self._write_event({"type": "annotation_control_error", "error": str(exc)})
 
     def _start_cursor_lock_if_needed(self):
-        if self._uses_ninja_cursors():
+        if self._uses_rake_cursor():
             self.cursor_lock_timer.stop()
             return
         self._set_cursor_to_start()
@@ -1736,7 +1745,7 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
         self.cursor_lock_timer.start()
 
     def _set_cursor_to_start_if_needed(self):
-        if not self._uses_ninja_cursors():
+        if not self._uses_rake_cursor():
             self._set_cursor_to_start()
 
     def _status_text(self) -> str:
@@ -1771,7 +1780,7 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
             )
             self._set_message_text("Finished" if is_english(self.language) else "Termine", style="center")
             self._stop_technique_process()
-            self._cleanup_ninja_control_file()
+            self._cleanup_rake_control_file()
             self._cleanup_annotation_control_file()
             self._end_session("completed")
             QtCore.QTimer.singleShot(1200, QtWidgets.QApplication.instance().quit)
@@ -1793,7 +1802,7 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
                 else "mouse"
             ),
         )
-        self._set_ninja_control_state(self._ninja_pretrial_state())
+        self._set_rake_control_state(self._rake_pretrial_state())
         self._write_annotation_control_state("paused")
         block_index = self.session_metadata.get("block_index")
         block_count = self.session_metadata.get("block_count")
@@ -1824,9 +1833,9 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
         if self.current_index == 0 and self.technique_command is not None and self.technique_process is None:
             self._set_message_text("Preparing technique..." if is_english(self.language) else "Preparation de la technique...", style="center")
             self._start_technique_process()
-            if self._should_wait_for_ninja_calibration():
-                self._waiting_for_ninja_calibration = True
-                self._set_message_text("Initializing Ninja Cursors..." if is_english(self.language) else "Initialisation de Ninja Cursors...", style="center")
+            if self._should_wait_for_rake_calibration():
+                self._waiting_for_rake_calibration = True
+                self._set_message_text("Initializing Rake Cursor..." if is_english(self.language) else "Initialisation de Rake Cursor...", style="center")
                 return
             countdown_delay = int(max(0.5, self.technique_start_delay_sec) * 1000)
         else:
@@ -1837,14 +1846,14 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
         if self.current_trial is None:
             return
         self._accept_clicks = False
-        self._set_ninja_control_state(self._ninja_pretrial_state())
+        self._set_rake_control_state(self._rake_pretrial_state())
         self._start_cursor_lock_if_needed()
         self._set_message_text(f"Image {self.current_index + 1}", style="center")
         QtCore.QTimer.singleShot(300, self._start_countdown)
 
     def _start_countdown(self):
         self._accept_clicks = False
-        self._set_ninja_control_state(self._ninja_pretrial_state())
+        self._set_rake_control_state(self._rake_pretrial_state())
         self._pretrial_cursor_lock_active = True
         self._start_cursor_lock_if_needed()
         self._write_annotation_control_state("paused")
@@ -1870,13 +1879,13 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
         self._unlock_pretrial_cursor()
         self._pretrial_cursor_lock_active = False
         self.canvas.clear_attention_cue()
-        if self._uses_ninja_cursors():
+        if self._uses_rake_cursor():
             # Fixation gate: gaze often anticipates the (predictable) target
             # during the attention cue, so require a real fixation at the
             # start point -- after the cue clears -- before going active.
-            self._start_ninja_fixation_wait()
+            self._start_rake_fixation_wait()
             return
-        self._set_ninja_control_state(self._ninja_active_state())
+        self._set_rake_control_state(self._rake_active_state())
         self._finish_begin_click_phase()
 
     def _finish_begin_click_phase(self):
@@ -1915,7 +1924,15 @@ class ExperimentalTaskWindow(QtWidgets.QWidget):
     def _target_contains(self, x: float, y: float) -> bool:
         if self.current_trial is None:
             return False
-        return bbox_contains_point(self.current_trial.target_bbox, x, y)
+        bbox = self.current_trial.target_bbox
+        if bbox_contains_point(bbox, x, y):
+            return True
+        # Click coordinates here are in image-pixel space, but the tolerance
+        # is meant to forgive on-screen jitter, so convert screen pixels to
+        # the equivalent image-pixel distance at the current display scale.
+        scale = self.canvas.image_to_widget_scale()
+        tolerance = CLICK_HIT_TOLERANCE_PX / scale if scale > 0 else CLICK_HIT_TOLERANCE_PX
+        return point_to_bbox_distance(x, y, bbox) <= tolerance
 
     def _handle_click(self, click_payload: dict):
         if self._should_delay_external_click(click_payload):
@@ -2114,7 +2131,7 @@ def main():
     parser.add_argument("--cursor-log-hz", type=float, default=30.0, help="Experiment-level cursor sampling rate")
     parser.add_argument("--no-task-session-events", action="store_true", help="Do not write task-level session_start/session_end events")
     parser.add_argument("--annotation-control-file", default=None, help="Existing annotation control file updated by this task")
-    parser.add_argument("--ninja-control-file", default=None, help="Existing Ninja experiment control file updated by this task")
+    parser.add_argument("--rake-control-file", default=None, help="Existing Rake experiment control file updated by this task")
     parser.add_argument("--keep-control-files", action="store_true", help="Do not delete external control files on task exit")
     parser.add_argument("--model-path", default=None, help="Optional YOLO model path for launched TargetFinder-based techniques")
     parser.add_argument("--change-thresh", type=int, default=DEFAULT_CHANGE_THRESH, help="Screen-change threshold for launched techniques")
@@ -2128,26 +2145,26 @@ def main():
     parser.add_argument("--dynaspot-spot-width", type=float, default=DEFAULT_DYNASPOT_SPOT_WIDTH, help="DynaSpot maximum spot diameter")
     parser.add_argument("--dynaspot-lag", type=float, default=DEFAULT_DYNASPOT_LAG, help="DynaSpot shrink lag")
     parser.add_argument("--dynaspot-reduce-time", type=float, default=DEFAULT_DYNASPOT_REDUCE_TIME, help="DynaSpot reduction time")
-    parser.add_argument("--ninja-camera-index", type=int, default=DEFAULT_NINJA_CAMERA_INDEX, help="Ninja webcam index")
-    parser.add_argument("--ninja-screen-width-cm", type=float, default=None, help="Ninja physical screen width in cm")
-    parser.add_argument("--ninja-screen-height-cm", type=float, default=None, help="Ninja physical screen height in cm")
-    parser.add_argument("--ninja-spacing", type=float, default=DEFAULT_NINJA_SPACING, help="Ninja cursor spacing in pixels")
-    parser.add_argument("--ninja-gaze-smoothing", type=float, default=DEFAULT_NINJA_GAZE_SMOOTHING, help="Ninja gaze smoothing")
-    parser.add_argument("--ninja-gaze-gain-x", type=float, default=DEFAULT_NINJA_GAZE_GAIN_X, help="Ninja gaze horizontal gain")
-    parser.add_argument("--ninja-gaze-gain-y", type=float, default=DEFAULT_NINJA_GAZE_GAIN_Y, help="Ninja gaze vertical gain")
-    parser.add_argument("--ninja-gaze-offset-x", type=float, default=DEFAULT_NINJA_GAZE_OFFSET_X, help="Ninja gaze horizontal offset")
-    parser.add_argument("--ninja-gaze-offset-y", type=float, default=DEFAULT_NINJA_GAZE_OFFSET_Y, help="Ninja gaze vertical offset")
-    parser.add_argument("--ninja-selection-hold", type=float, default=DEFAULT_NINJA_SELECTION_HOLD, help="Ninja dwell duration before lock")
-    parser.add_argument("--ninja-lock-on-dwell", action="store_true", help="Require Ninja dwell lock before click")
-    parser.add_argument("--ninja-lock-on-key", action="store_true", help="Require pressing space to lock the Ninja candidate cursor before click")
-    parser.add_argument("--ninja-hide-gaze-point", action="store_true", help="Hide Ninja red gaze point")
-    parser.add_argument("--ninja-hide-debug-status", action="store_true", help="Hide Ninja gaze tracking status overlay")
-    parser.add_argument("--ninja-snap-system-cursor-to-active", action="store_true", help="Move the native cursor to the active Ninja cursor")
-    parser.add_argument("--ninja-calib-points", type=int, choices=[5, 9, 13], default=5, help="Ninja calibration point count")
-    parser.add_argument("--ninja-auto-calibrate", action="store_true", help="Start Ninja calibration automatically")
-    parser.add_argument("--ninja-without-targetfinder", dest="ninja_without_targetfinder", action="store_true", help="Disable TargetFinder detections inside Ninja Cursors")
-    parser.add_argument("--ninja-with-targetfinder", dest="ninja_without_targetfinder", action="store_false", help="Enable TargetFinder detections inside Ninja Cursors")
-    parser.set_defaults(ninja_without_targetfinder=True)
+    parser.add_argument("--rake-camera-index", type=int, default=DEFAULT_RAKE_CAMERA_INDEX, help="Rake webcam index")
+    parser.add_argument("--rake-screen-width-cm", type=float, default=None, help="Rake physical screen width in cm")
+    parser.add_argument("--rake-screen-height-cm", type=float, default=None, help="Rake physical screen height in cm")
+    parser.add_argument("--rake-spacing", type=float, default=DEFAULT_RAKE_SPACING, help="Rake cursor spacing in pixels")
+    parser.add_argument("--rake-gaze-smoothing", type=float, default=DEFAULT_RAKE_GAZE_SMOOTHING, help="Rake gaze smoothing")
+    parser.add_argument("--rake-gaze-gain-x", type=float, default=DEFAULT_RAKE_GAZE_GAIN_X, help="Rake gaze horizontal gain")
+    parser.add_argument("--rake-gaze-gain-y", type=float, default=DEFAULT_RAKE_GAZE_GAIN_Y, help="Rake gaze vertical gain")
+    parser.add_argument("--rake-gaze-offset-x", type=float, default=DEFAULT_RAKE_GAZE_OFFSET_X, help="Rake gaze horizontal offset")
+    parser.add_argument("--rake-gaze-offset-y", type=float, default=DEFAULT_RAKE_GAZE_OFFSET_Y, help="Rake gaze vertical offset")
+    parser.add_argument("--rake-selection-hold", type=float, default=DEFAULT_RAKE_SELECTION_HOLD, help="Rake dwell duration before lock")
+    parser.add_argument("--rake-lock-on-dwell", action="store_true", help="Require Rake dwell lock before click")
+    parser.add_argument("--rake-lock-on-key", action="store_true", help="Require pressing space to lock the Rake candidate cursor before click")
+    parser.add_argument("--rake-hide-gaze-point", action="store_true", help="Hide Rake red gaze point")
+    parser.add_argument("--rake-hide-debug-status", action="store_true", help="Hide Rake gaze tracking status overlay")
+    parser.add_argument("--rake-snap-system-cursor-to-active", action="store_true", help="Move the native cursor to the active Rake cursor")
+    parser.add_argument("--rake-calib-points", type=int, choices=[5, 9, 13], default=5, help="Rake calibration point count")
+    parser.add_argument("--rake-auto-calibrate", action="store_true", help="Start Rake calibration automatically")
+    parser.add_argument("--rake-without-targetfinder", dest="rake_without_targetfinder", action="store_true", help="Disable TargetFinder detections inside Rake Cursor")
+    parser.add_argument("--rake-with-targetfinder", dest="rake_without_targetfinder", action="store_false", help="Enable TargetFinder detections inside Rake Cursor")
+    parser.set_defaults(rake_without_targetfinder=True)
     args = parser.parse_args()
     args.id_value = None if args.id_value == "mixed" else float(args.id_value)
     args.rho_value = None if args.rho_value == "mixed" else float(args.rho_value)
@@ -2217,7 +2234,7 @@ def main():
         technique_command=technique_command,
         technique_log_file=technique_log_file,
         annotation_control_file=annotation_control_file,
-        ninja_control_file=Path(args.ninja_control_file).expanduser() if args.ninja_control_file else None,
+        rake_control_file=Path(args.rake_control_file).expanduser() if args.rake_control_file else None,
         external_technique_active=bool(args.no_launch_technique and annotation_control_file is not None and args.technique != "mouse"),
         cleanup_control_files=not args.keep_control_files,
         technique_start_delay_sec=args.technique_start_delay,

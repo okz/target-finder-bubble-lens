@@ -80,7 +80,7 @@ class EyeCalibrationTest(unittest.TestCase):
         self.assertAlmostEqual(correction["gaze_gain_y"], 1.0, places=6)
         self.assertAlmostEqual(correction["gaze_offset_x"], 0.0, places=6)
         self.assertAlmostEqual(correction["gaze_offset_y"], 0.0, places=6)
-        affine = np.array(correction["ninja_affine_matrix"], dtype=np.float64)
+        affine = np.array(correction["rake_affine_matrix"], dtype=np.float64)
         self.assertAlmostEqual(affine[0, 0], expected_gain_x, places=6)
         self.assertAlmostEqual(affine[1, 1], expected_gain_y, places=6)
         self.assertAlmostEqual(affine[0, 2], expected_bias_x, places=6)
@@ -110,7 +110,7 @@ class EyeCalibrationTest(unittest.TestCase):
             target_norm_x = target_x / screen_w - 0.5
             target_norm_y = target_y / screen_h - 0.5
             # Add a cross-axis term to the samples.  The full affine can model
-            # it, but Ninja runtime can only use diagonal gain plus offset.
+            # it, but Rake runtime can only use diagonal gain plus offset.
             sample_x = raw_x + raw_y * 0.45
             sample_y = raw_y - raw_x * 0.30
             calibration._gaze_results.append(
@@ -178,7 +178,7 @@ class EyeCalibrationTest(unittest.TestCase):
 
         self.assertTrue(calibration.is_calibrated)
         self.assertTrue(done[0][0])
-        affine = np.array(calibration.correction_values["ninja_affine_matrix"], dtype=np.float64)
+        affine = np.array(calibration.correction_values["rake_affine_matrix"], dtype=np.float64)
         self.assertAlmostEqual(affine[0, 0], expected_gain_x, places=2)
         self.assertAlmostEqual(affine[1, 1], expected_gain_y, places=2)
         for point in saved["diagnostics"]["points"]:
@@ -278,7 +278,7 @@ class EyeCalibrationTest(unittest.TestCase):
         self.assertGreater(tracker.infer_calls, 0)
         self.assertTrue(calibration.is_calibrated)
         self.assertLess(done[0][1], 1e-6)
-        affine = np.array(calibration.correction_values["ninja_affine_matrix"], dtype=np.float64)
+        affine = np.array(calibration.correction_values["rake_affine_matrix"], dtype=np.float64)
         # Re-inferred points map exactly onto their targets, so the fitted
         # affine should be close to identity, not skewed by norm_pog=(5, 5).
         self.assertAlmostEqual(affine[0, 0], 1.0, places=3)

@@ -1,4 +1,4 @@
-"""Inspect the latest Ninja Cursors gaze calibration result."""
+"""Inspect the latest Rake Cursor gaze calibration result."""
 
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ def inspect_calibration(path: pathlib.Path) -> int:
     print(f"calibration mean error: {mean_error_px:.1f}px")
     if manual_mean_error_px is not None:
         print(f"manual gain/offset mean error: {_as_float(manual_mean_error_px):.1f}px")
-    print(f"half Ninja column gap estimate: {half_cursor_gap_px:.1f}px")
+    print(f"half Rake column gap estimate: {half_cursor_gap_px:.1f}px")
     print(f"quality: {quality}")
     if accepted is not None:
         print(f"accepted: {bool(accepted)}")

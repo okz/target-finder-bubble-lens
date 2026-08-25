@@ -38,14 +38,14 @@ from target_finder_toolkit.experimental_task import (
     DEFAULT_DYNASPOT_REDUCE_TIME,
     DEFAULT_DYNASPOT_SPOT_WIDTH,
     DEFAULT_IOU,
-    DEFAULT_NINJA_CAMERA_INDEX,
-    DEFAULT_NINJA_GAZE_GAIN_X,
-    DEFAULT_NINJA_GAZE_GAIN_Y,
-    DEFAULT_NINJA_GAZE_OFFSET_X,
-    DEFAULT_NINJA_GAZE_OFFSET_Y,
-    DEFAULT_NINJA_GAZE_SMOOTHING,
-    DEFAULT_NINJA_SELECTION_HOLD,
-    DEFAULT_NINJA_SPACING,
+    DEFAULT_RAKE_CAMERA_INDEX,
+    DEFAULT_RAKE_GAZE_GAIN_X,
+    DEFAULT_RAKE_GAZE_GAIN_Y,
+    DEFAULT_RAKE_GAZE_OFFSET_X,
+    DEFAULT_RAKE_GAZE_OFFSET_Y,
+    DEFAULT_RAKE_GAZE_SMOOTHING,
+    DEFAULT_RAKE_SELECTION_HOLD,
+    DEFAULT_RAKE_SPACING,
     EXPERIMENT_TECHNIQUES as TECHNIQUES,
     build_technique_command,
 )
@@ -73,12 +73,18 @@ DEFAULT_MAX_CLICKS = 1
 DEFAULT_CURSOR_HZ = 30.0
 HEADER_HEIGHT = 64
 RELEASE_GUARD_MS = 120
-NINJA_FIXATION_HARD_TIMEOUT_SEC = 6.0
+# Fallback for when the task process misses the rake subprocess's
+# achieved/timeout write to the .fixation status file (e.g. a missed poll).
+# A normal round trip is a handful of poll ticks (<200ms), so this only
+# matters when the handshake itself is stuck; kept short so a missed read
+# doesn't leave the white fixation ring on screen for seconds after the
+# participant has already achieved fixation.
+RAKE_FIXATION_HARD_TIMEOUT_SEC = 1.0
 HOME_RADIUS = 24.0
 MIN_DISTRACTOR_DIAMETER = 6.0
 MIN_TARGET_DIAMETER = 0.0
 DISTRACTOR_SCREEN_MARGIN = 12.0
-NINJA_CALIBRATION_MAX_RETRIES = 2
+RAKE_CALIBRATION_MAX_RETRIES = 2
 
 DIFFICULTY_IDS = {
     "easy": 3.0,
@@ -466,7 +472,7 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
         annotation_control_file: Path,
         language: str,
         seed: int | None,
-        ninja_control_file: Path | None = None,
+        rake_control_file: Path | None = None,
         external_technique_active: bool = False,
         cleanup_control_files: bool = True,
         session_metadata: dict | None = None,
@@ -494,7 +500,7 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
         self.technique_log_file = technique_log_file
         self.annotation_control_file = Path(annotation_control_file)
         self.language = language
-        self.ninja_control_file = Path(ninja_control_file) if ninja_control_file else None
+        self.rake_control_file = Path(rake_control_file) if rake_control_file else None
         self.external_technique_active = bool(external_technique_active)
         self.cleanup_control_files = bool(cleanup_control_files)
         self.session_metadata = dict(session_metadata or {})
@@ -521,20 +527,20 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
         self._app_filter_installed = False
         self._last_recenter_log_at = 0.0
         self._window_shown_logged = False
-        self._waiting_for_ninja_calibration = False
-        self._waiting_for_ninja_fixation = False
-        self._ninja_fixation_wait_started_at = 0.0
-        self._ninja_calibration_retries_left = NINJA_CALIBRATION_MAX_RETRIES
+        self._waiting_for_rake_calibration = False
+        self._waiting_for_rake_fixation = False
+        self._rake_fixation_wait_started_at = 0.0
+        self._rake_calibration_retries_left = RAKE_CALIBRATION_MAX_RETRIES
         self._process_output_buffer = ""
         self._process_output_lines: list[str] = []
 
-        if self.technique_command is not None and self._uses_ninja_cursors():
-            if self.ninja_control_file is None:
-                self.ninja_control_file = self.logger.path.with_suffix(".ninja_control")
-            self.technique_command += ["--experiment-control-file", str(self.ninja_control_file)]
-            self._set_ninja_control_state("paused")
-        elif self.ninja_control_file is not None:
-            self._set_ninja_control_state("paused")
+        if self.technique_command is not None and self._uses_rake_cursor():
+            if self.rake_control_file is None:
+                self.rake_control_file = self.logger.path.with_suffix(".rake_control")
+            self.technique_command += ["--experiment-control-file", str(self.rake_control_file)]
+            self._set_rake_control_state("paused")
+        elif self.rake_control_file is not None:
+            self._set_rake_control_state("paused")
 
         self.setMouseTracking(True)
         self.setWindowTitle("Synthetic Fitts with distractors")
@@ -553,9 +559,9 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
         self.technique_watch_timer = QtCore.QTimer(self)
         self.technique_watch_timer.setInterval(100)
         self.technique_watch_timer.timeout.connect(self._check_technique_process)
-        self._ninja_fixation_poll_timer = QtCore.QTimer(self)
-        self._ninja_fixation_poll_timer.setInterval(30)
-        self._ninja_fixation_poll_timer.timeout.connect(self._check_ninja_fixation_gate)
+        self._rake_fixation_poll_timer = QtCore.QTimer(self)
+        self._rake_fixation_poll_timer.setInterval(30)
+        self._rake_fixation_poll_timer.timeout.connect(self._check_rake_fixation_gate)
 
         self._escape_shortcut = QtGui.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key.Key_Escape), self)
         self._escape_shortcut.setContext(QtCore.Qt.ShortcutContext.ApplicationShortcut)
@@ -586,7 +592,7 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
                 "log_file": str(log_file),
                 "technique_log_file": str(technique_log_file) if technique_log_file else None,
                 "annotation_control_file": str(annotation_control_file),
-                "ninja_control_file": str(self.ninja_control_file) if self.ninja_control_file else None,
+                "rake_control_file": str(self.rake_control_file) if self.rake_control_file else None,
                 "external_technique_active": self.external_technique_active,
                 "source": "synthetic_generated_targets_fake_targetfinder",
                 **self.session_metadata,
@@ -652,11 +658,11 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
         if self._session_ended or self._aborting:
             return
         if self.technique_command is not None and self.technique_process is None:
-            waits_for_ninja_calibration = self._should_wait_for_ninja_calibration()
+            waits_for_rake_calibration = self._should_wait_for_rake_calibration()
             popen_kwargs = {
                 "cwd": str(PROJECT_ROOT),
-                "stdout": subprocess.PIPE if waits_for_ninja_calibration else subprocess.DEVNULL,
-                "stderr": subprocess.STDOUT if waits_for_ninja_calibration else subprocess.DEVNULL,
+                "stdout": subprocess.PIPE if waits_for_rake_calibration else subprocess.DEVNULL,
+                "stderr": subprocess.STDOUT if waits_for_rake_calibration else subprocess.DEVNULL,
             }
             if sys.platform.startswith("win"):
                 popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -665,7 +671,7 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
             self.technique_process = attach_windows_kill_on_close_job(
                 subprocess.Popen(self.technique_command, **popen_kwargs)
             )
-            if waits_for_ninja_calibration and self.technique_process.stdout is not None:
+            if waits_for_rake_calibration and self.technique_process.stdout is not None:
                 try:
                     os.set_blocking(self.technique_process.stdout.fileno(), False)
                 except Exception:
@@ -682,19 +688,19 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
             # Keep watching the technique process for the whole session, not
             # just during calibration, so an unexpected exit ends the trial.
             self.technique_watch_timer.start()
-            if waits_for_ninja_calibration:
-                # Don't start trials before Ninja Cursors finishes calibrating.
-                self._waiting_for_ninja_calibration = True
+            if waits_for_rake_calibration:
+                # Don't start trials before Rake Cursor finishes calibrating.
+                self._waiting_for_rake_calibration = True
                 return
             QtCore.QTimer.singleShot(1200, self._next_trial)
             return
         self._next_trial()
 
-    def _should_wait_for_ninja_calibration(self) -> bool:
+    def _should_wait_for_rake_calibration(self) -> bool:
         return (
-            self._uses_ninja_cursors()
+            self._uses_rake_cursor()
             and self.technique_command is not None
-            and "--ninja-auto-calibrate" in self.technique_command
+            and "--rake-auto-calibrate" in self.technique_command
         )
 
     def _drain_technique_output(self):
@@ -728,7 +734,7 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
             self._handle_technique_output_line(line)
 
     def _handle_technique_output_line(self, line: str):
-        prefix = "__NINJA_CALIB__ "
+        prefix = "__RAKE_CALIB__ "
         if not line.startswith(prefix):
             return
         try:
@@ -736,29 +742,29 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
         except Exception:
             return
         event = payload.get("event")
-        self.logger.write({"type": "ninja_calibration_event", **payload})
+        self.logger.write({"type": "rake_calibration_event", **payload})
         if event not in {"calibrated", "failed", "cancelled"}:
             return
-        if not self._waiting_for_ninja_calibration:
+        if not self._waiting_for_rake_calibration:
             return
         if event == "calibrated":
-            self._waiting_for_ninja_calibration = False
+            self._waiting_for_rake_calibration = False
             QtCore.QTimer.singleShot(900, self._next_trial)
         elif event == "failed":
-            if self._ninja_calibration_retries_left > 0:
-                self._ninja_calibration_retries_left -= 1
-                self.logger.write({"type": "ninja_calibration_retry", "event": event})
-                self._set_ninja_control_state(self._ninja_state_at_screen_center("calibrate"))
+            if self._rake_calibration_retries_left > 0:
+                self._rake_calibration_retries_left -= 1
+                self.logger.write({"type": "rake_calibration_retry", "event": event})
+                self._set_rake_control_state(self._rake_state_at_screen_center("calibrate"))
             else:
-                self._waiting_for_ninja_calibration = False
+                self._waiting_for_rake_calibration = False
                 self.technique_watch_timer.stop()
-                self.logger.write({"type": "ninja_calibration_blocked_session", "event": event})
-                self._abort_session("ninja_calibration_failed")
+                self.logger.write({"type": "rake_calibration_blocked_session", "event": event})
+                self._abort_session("rake_calibration_failed")
         else:
-            self._waiting_for_ninja_calibration = False
+            self._waiting_for_rake_calibration = False
             self.technique_watch_timer.stop()
-            self.logger.write({"type": "ninja_calibration_blocked_session", "event": event})
-            self._abort_session("ninja_calibration_cancelled")
+            self.logger.write({"type": "rake_calibration_blocked_session", "event": event})
+            self._abort_session("rake_calibration_cancelled")
 
     def _check_technique_process(self):
         if self.technique_process is None:
@@ -778,79 +784,79 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
             self._process_output_buffer = ""
         self.logger.write({"type": "technique_process_exit", "exit_code": exit_code})
         self.technique_watch_timer.stop()
-        self._ninja_fixation_poll_timer.stop()
-        self._waiting_for_ninja_fixation = False
-        if self._waiting_for_ninja_calibration:
-            self._waiting_for_ninja_calibration = False
-            self.logger.write({"type": "ninja_calibration_blocked_session", "event": "process_exited"})
-            self._abort_session("ninja_exited_during_calibration")
+        self._rake_fixation_poll_timer.stop()
+        self._waiting_for_rake_fixation = False
+        if self._waiting_for_rake_calibration:
+            self._waiting_for_rake_calibration = False
+            self.logger.write({"type": "rake_calibration_blocked_session", "event": "process_exited"})
+            self._abort_session("rake_exited_during_calibration")
             return
         # Technique process died outside the calibration wait; end the
         # session instead of continuing against a dead technique.
         if not self._session_ended and not self._aborting:
             self._abort_session("technique_exited_unexpectedly")
 
-    def _uses_ninja_cursors(self) -> bool:
-        return self.technique == "ninja_cursors" or (
+    def _uses_rake_cursor(self) -> bool:
+        return self.technique == "rake_cursor" or (
             self.technique_command is not None
-            and any("target_finder_toolkit.ninjacursors" in part for part in self.technique_command)
+            and any("target_finder_toolkit.rakecursor" in part for part in self.technique_command)
         )
 
-    def _ninja_pretrial_state(self) -> str:
-        return self._ninja_state_at_home("ready")
+    def _rake_pretrial_state(self) -> str:
+        return self._rake_state_at_home("ready")
 
-    def _ninja_active_state(self) -> str:
-        return self._ninja_state_at_home("active")
+    def _rake_active_state(self) -> str:
+        return self._rake_state_at_home("active")
 
-    def _ninja_fixation_state(self) -> str:
-        return self._ninja_state_at_home("fixate")
+    def _rake_fixation_state(self) -> str:
+        return self._rake_state_at_home("fixate")
 
-    def _ninja_state_at_home(self, state: str) -> str:
-        if not self._uses_ninja_cursors():
+    def _rake_state_at_home(self, state: str) -> str:
+        if not self._uses_rake_cursor():
             return "paused"
         home = self._home_global_position()
         return f"{state} {int(home.x())} {int(home.y())}"
 
-    def _ninja_fixation_status_path(self) -> Path | None:
-        if self.ninja_control_file is None:
+    def _rake_fixation_status_path(self) -> Path | None:
+        if self.rake_control_file is None:
             return None
-        return Path(str(self.ninja_control_file) + ".fixation")
+        return Path(str(self.rake_control_file) + ".fixation")
 
-    def _start_ninja_fixation_wait(self):
-        status_path = self._ninja_fixation_status_path()
+    def _start_rake_fixation_wait(self):
+        status_path = self._rake_fixation_status_path()
         if status_path is not None:
             status_path.unlink(missing_ok=True)
-        self._waiting_for_ninja_fixation = True
-        self._ninja_fixation_wait_started_at = time.monotonic()
-        self._set_ninja_control_state(self._ninja_fixation_state())
-        self._ninja_fixation_poll_timer.start()
+        self._waiting_for_rake_fixation = True
+        self._rake_fixation_wait_started_at = time.monotonic()
+        self._set_rake_control_state(self._rake_fixation_state())
+        self._rake_fixation_poll_timer.start()
 
-    def _check_ninja_fixation_gate(self):
-        if not self._waiting_for_ninja_fixation:
-            self._ninja_fixation_poll_timer.stop()
+    def _check_rake_fixation_gate(self):
+        if not self._waiting_for_rake_fixation:
+            self._rake_fixation_poll_timer.stop()
             return
-        status_path = self._ninja_fixation_status_path()
+        status_path = self._rake_fixation_status_path()
         try:
             status = status_path.read_text(encoding="utf-8").strip() if status_path else ""
         except OSError:
             status = ""
-        # Hard fallback: never block the session indefinitely on the ninja
+        # Hard fallback: never block the session indefinitely on the rake
         # subprocess's own fixation gate, even if it never writes a status
         # file (missed poll, gaze drift, subprocess stall, etc.).
         if status not in {"achieved", "timeout"}:
-            elapsed = time.monotonic() - self._ninja_fixation_wait_started_at
-            if elapsed < NINJA_FIXATION_HARD_TIMEOUT_SEC:
+            elapsed = time.monotonic() - self._rake_fixation_wait_started_at
+            if elapsed < RAKE_FIXATION_HARD_TIMEOUT_SEC:
                 return
             status = "hard_timeout"
-        self._ninja_fixation_poll_timer.stop()
-        self._waiting_for_ninja_fixation = False
-        self.logger.write({"type": "ninja_fixation_gate_event", "event": status})
-        self._set_ninja_control_state(self._ninja_active_state())
+        self._rake_fixation_poll_timer.stop()
+        self._waiting_for_rake_fixation = False
+        self.logger.write({"type": "rake_fixation_gate_event", "event": status})
+        self._set_rake_control_state(self._rake_active_state())
         self.update()
         QtCore.QTimer.singleShot(RELEASE_GUARD_MS, self._begin_movement)
 
-    def _ninja_state_at_screen_center(self, state: str) -> str:
-        if not self._uses_ninja_cursors():
+    def _rake_state_at_screen_center(self, state: str) -> str:
+        if not self._uses_rake_cursor():
             return "paused"
         center = self._screen_center_global()
         return f"{state} {int(center.x())} {int(center.y())}"
@@ -866,20 +872,20 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
             return screen.geometry().center()
         return self.mapToGlobal(self.rect().center())
 
-    def _set_ninja_control_state(self, state: str):
-        if self.ninja_control_file is None:
+    def _set_rake_control_state(self, state: str):
+        if self.rake_control_file is None:
             return
         try:
             control_state = state
-            self.ninja_control_file.write_text(control_state, encoding="utf-8")
+            self.rake_control_file.write_text(control_state, encoding="utf-8")
             self.logger.write({
-                "type": "ninja_control_state",
+                "type": "rake_control_state",
                 **self._base_event(),
                 "state": state,
                 "control_state": control_state,
             })
         except OSError as exc:
-            self.logger.write({"type": "ninja_control_error", **self._base_event(), "error": str(exc)})
+            self.logger.write({"type": "rake_control_error", **self._base_event(), "error": str(exc)})
 
     def _cleanup_control_files(self):
         if not self.cleanup_control_files:
@@ -888,9 +894,9 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
             self.annotation_control_file.unlink(missing_ok=True)
         except OSError:
             pass
-        if self.ninja_control_file is not None:
+        if self.rake_control_file is not None:
             try:
-                self.ninja_control_file.unlink(missing_ok=True)
+                self.rake_control_file.unlink(missing_ok=True)
             except OSError:
                 pass
 
@@ -950,7 +956,7 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
         self.countdown_timer.stop()
         self.cursor_sample_timer.stop()
         self._write_annotation_state("inactive")
-        self._set_ninja_control_state(self._ninja_pretrial_state())
+        self._set_rake_control_state(self._rake_pretrial_state())
         self.logger.write(
             {
                 "type": "trial_start",
@@ -1013,7 +1019,7 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
     def _move_cursor_to_home(self):
         if self.current_trial is None:
             return
-        if self._uses_ninja_cursors():
+        if self._uses_rake_cursor():
             return
         global_pos = self._home_global_position()
         QtGui.QCursor.setPos(global_pos)
@@ -1034,13 +1040,13 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
             )
 
     def _lock_cursor_at_home(self):
-        if self._uses_ninja_cursors():
+        if self._uses_rake_cursor():
             self.logger.write(
                 {
                     "type": "cursor_lock_skipped",
                     **self._base_event(),
-                    "reason": "ninja_cursors_screen_center_anchor",
-                    "ninja_control_state": self._ninja_pretrial_state(),
+                    "reason": "rake_cursor_screen_center_anchor",
+                    "rake_control_state": self._rake_pretrial_state(),
                 }
             )
             return
@@ -1063,7 +1069,7 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
         )
 
     def _unlock_cursor_at_home(self):
-        if self._uses_ninja_cursors():
+        if self._uses_rake_cursor():
             return
         if self._uses_semantic_pointing():
             self.cursor_lock_timer.stop()
@@ -1097,7 +1103,7 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
     def _countdown_tick(self):
         if self._session_ended or self._aborting or self.current_trial is None or self.state != "countdown":
             return
-        if not self._uses_ninja_cursors():
+        if not self._uses_rake_cursor():
             self._move_cursor_to_home()
         if time.monotonic() - self.countdown_started_at >= self.countdown:
             self._finish_countdown()
@@ -1110,7 +1116,7 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
         self._keep_task_window_front()
         self.state = "release_guard"
         self.countdown_timer.stop()
-        if not self._uses_ninja_cursors():
+        if not self._uses_rake_cursor():
             self._move_cursor_to_home()
         if not self._uses_semantic_pointing():
             self._write_annotation_state("active")
@@ -1124,10 +1130,10 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
             }
         )
         self.update()
-        if self._uses_ninja_cursors():
-            self._start_ninja_fixation_wait()
+        if self._uses_rake_cursor():
+            self._start_rake_fixation_wait()
             return
-        self._set_ninja_control_state(self._ninja_active_state())
+        self._set_rake_control_state(self._rake_active_state())
         QtCore.QTimer.singleShot(RELEASE_GUARD_MS, self._begin_movement)
 
     def _begin_movement(self):
@@ -1282,7 +1288,7 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
         self.feedback_success = bool(success)
         self.cursor_sample_timer.stop()
         self._write_annotation_state("inactive")
-        self._set_ninja_control_state("paused")
+        self._set_rake_control_state("paused")
         self.logger.write(
             {
                 "type": "trial_end",
@@ -1345,10 +1351,10 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
         self.countdown_timer.stop()
         self.cursor_sample_timer.stop()
         self.technique_watch_timer.stop()
-        self._ninja_fixation_poll_timer.stop()
-        self._waiting_for_ninja_fixation = False
+        self._rake_fixation_poll_timer.stop()
+        self._waiting_for_rake_fixation = False
         self._set_mouse_association(True)
-        self._set_ninja_control_state("paused")
+        self._set_rake_control_state("paused")
         self._write_annotation_state("inactive")
         if self.technique_process is not None and self.technique_process.poll() is None:
             proc = self.technique_process
@@ -1360,7 +1366,7 @@ class FittsDistractorsWindow(QtWidgets.QWidget):
                         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
                     except Exception:
                         proc.terminate()
-                # Ninja Cursors must release its webcam handle through its own
+                # Rake Cursor must release its webcam handle through its own
                 # SIGTERM cleanup before the next task tries to open the same
                 # camera; killing it early can leave the device stuck busy for
                 # a long time (control_complet's next task hangs on startup).
@@ -1523,7 +1529,7 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--condition-sequence-json", default=None)
     parser.add_argument("--no-launch-technique", action="store_true")
     parser.add_argument("--annotation-control-file", default=None)
-    parser.add_argument("--ninja-control-file", default=None)
+    parser.add_argument("--rake-control-file", default=None)
     parser.add_argument("--keep-control-files", action="store_true")
     parser.add_argument("--model-path", default=None)
     parser.add_argument("--change-thresh", type=int, default=DEFAULT_CHANGE_THRESH)
@@ -1537,25 +1543,25 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--dynaspot-spot-width", type=float, default=DEFAULT_DYNASPOT_SPOT_WIDTH)
     parser.add_argument("--dynaspot-lag", type=float, default=DEFAULT_DYNASPOT_LAG)
     parser.add_argument("--dynaspot-reduce-time", type=float, default=DEFAULT_DYNASPOT_REDUCE_TIME)
-    parser.add_argument("--ninja-camera-index", type=int, default=DEFAULT_NINJA_CAMERA_INDEX)
-    parser.add_argument("--ninja-screen-width-cm", type=float, default=None)
-    parser.add_argument("--ninja-screen-height-cm", type=float, default=None)
-    parser.add_argument("--ninja-spacing", type=float, default=DEFAULT_NINJA_SPACING)
-    parser.add_argument("--ninja-gaze-smoothing", type=float, default=DEFAULT_NINJA_GAZE_SMOOTHING)
-    parser.add_argument("--ninja-gaze-gain-x", type=float, default=DEFAULT_NINJA_GAZE_GAIN_X)
-    parser.add_argument("--ninja-gaze-gain-y", type=float, default=DEFAULT_NINJA_GAZE_GAIN_Y)
-    parser.add_argument("--ninja-gaze-offset-x", type=float, default=DEFAULT_NINJA_GAZE_OFFSET_X)
-    parser.add_argument("--ninja-gaze-offset-y", type=float, default=DEFAULT_NINJA_GAZE_OFFSET_Y)
-    parser.add_argument("--ninja-selection-hold", type=float, default=DEFAULT_NINJA_SELECTION_HOLD)
-    parser.add_argument("--ninja-lock-on-dwell", action="store_true")
-    parser.add_argument("--ninja-lock-on-key", action="store_true")
-    parser.add_argument("--ninja-hide-gaze-point", action="store_true")
-    parser.add_argument("--ninja-hide-debug-status", action="store_true")
-    parser.add_argument("--ninja-snap-system-cursor-to-active", action="store_true")
-    parser.add_argument("--ninja-calib-points", type=int, choices=[5, 9, 13], default=5)
-    parser.add_argument("--ninja-auto-calibrate", action="store_true")
-    parser.add_argument("--ninja-with-targetfinder", dest="ninja_without_targetfinder", action="store_false")
-    parser.set_defaults(ninja_without_targetfinder=True)
+    parser.add_argument("--rake-camera-index", type=int, default=DEFAULT_RAKE_CAMERA_INDEX)
+    parser.add_argument("--rake-screen-width-cm", type=float, default=None)
+    parser.add_argument("--rake-screen-height-cm", type=float, default=None)
+    parser.add_argument("--rake-spacing", type=float, default=DEFAULT_RAKE_SPACING)
+    parser.add_argument("--rake-gaze-smoothing", type=float, default=DEFAULT_RAKE_GAZE_SMOOTHING)
+    parser.add_argument("--rake-gaze-gain-x", type=float, default=DEFAULT_RAKE_GAZE_GAIN_X)
+    parser.add_argument("--rake-gaze-gain-y", type=float, default=DEFAULT_RAKE_GAZE_GAIN_Y)
+    parser.add_argument("--rake-gaze-offset-x", type=float, default=DEFAULT_RAKE_GAZE_OFFSET_X)
+    parser.add_argument("--rake-gaze-offset-y", type=float, default=DEFAULT_RAKE_GAZE_OFFSET_Y)
+    parser.add_argument("--rake-selection-hold", type=float, default=DEFAULT_RAKE_SELECTION_HOLD)
+    parser.add_argument("--rake-lock-on-dwell", action="store_true")
+    parser.add_argument("--rake-lock-on-key", action="store_true")
+    parser.add_argument("--rake-hide-gaze-point", action="store_true")
+    parser.add_argument("--rake-hide-debug-status", action="store_true")
+    parser.add_argument("--rake-snap-system-cursor-to-active", action="store_true")
+    parser.add_argument("--rake-calib-points", type=int, choices=[5, 9, 13], default=5)
+    parser.add_argument("--rake-auto-calibrate", action="store_true")
+    parser.add_argument("--rake-with-targetfinder", dest="rake_without_targetfinder", action="store_false")
+    parser.set_defaults(rake_without_targetfinder=True)
     parser.add_argument("--no-technique-log", action="store_true")
     parser.add_argument("--no-log", action="store_true", help="Run without preserving synthetic task JSONL logs")
     return parser.parse_args(argv)
@@ -1647,7 +1653,7 @@ def main(argv: list[str] | None = None) -> int:
         annotation_control_file=annotation_control_file,
         language=args.language,
         seed=args.seed,
-        ninja_control_file=Path(args.ninja_control_file).expanduser().resolve() if args.ninja_control_file else None,
+        rake_control_file=Path(args.rake_control_file).expanduser().resolve() if args.rake_control_file else None,
         external_technique_active=bool(args.no_launch_technique and args.technique != "mouse"),
         cleanup_control_files=not args.keep_control_files,
         session_metadata=session_metadata,

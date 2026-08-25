@@ -42,7 +42,6 @@ bubblecursor     = "target_finder_toolkit.bubblecursor:main"
 semanticpointing = "target_finder_toolkit.semanticpointing:main"
 dynaspot         = "target_finder_toolkit.dynaspot:main"
 rakecursor       = "target_finder_toolkit.rakecursor:main"
-ninjacursors     = "target_finder_toolkit.ninjacursors:main"
 experimental-task = "target_finder_toolkit.experimental_task:main"
 experimental-session = "target_finder_toolkit.experimental_session:main"
 

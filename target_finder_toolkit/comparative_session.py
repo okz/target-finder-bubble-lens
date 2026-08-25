@@ -39,7 +39,11 @@ from target_finder_toolkit.fitts_distractors_task import (
     DEFAULT_MAX_CLICKS,
     DEFAULT_TRIALS,
 )
-from target_finder_toolkit.window_utils import install_qt_crash_guard
+from target_finder_toolkit.window_utils import (
+    activate_process_by_pid,
+    install_qt_crash_guard,
+    reset_macos_window_level,
+)
 
 
 _current_child_process: list = [None]
@@ -432,18 +436,14 @@ def run(args) -> int:
             log_group = "control_fitts_synthetic_logs"
 
         task_args = argparse.Namespace(**vars(args))
-        # Only calibrate once, before the first task: each task is its own
-        # process with its own preloaded Ninja, and MAML adaptation compounds
-        # on repeated calibration (accumulates prior samples into the same
-        # model weights), degrading accuracy on every re-calibration instead
-        # of improving it. Later tasks reuse the affine matrix the first
-        # task's calibration already saved to disk.
-        if task_index > 1:
-            # Still wait for Ninja to finish warming up (it's a fresh process
-            # per task) even though we're skipping calibration -- just not
-            # the calibration flow itself.
-            task_args.ninja_wait_ready = bool(args.ninja_auto_calibrate)
-            task_args.ninja_auto_calibrate = False
+        # Each task now calibrates rake_cursor on its own, right before
+        # rake's own block starts within that task (see
+        # _run_rake_calibration_flow_or_exit in experimental_session.py /
+        # synthetic_fitts_session.py) -- not once for the whole comparative
+        # protocol. Every task gets a fresh preloaded Rake process (started
+        # and stopped independently), so there's no cross-task compounding
+        # of the MAML calibration adaptation to worry about: each task's
+        # calibration only ever runs once, against that task's own process.
         cmd = build_task_command(task_args, task_name, task_output_dir)
 
         if args.summary_only:
@@ -486,13 +486,23 @@ def run(args) -> int:
                     "log_group": log_group,
                     "output_dir": str(task_output_dir),
                     "command": cmd,
-                    "ninja_auto_calibrate": bool(getattr(task_args, "ninja_auto_calibrate", False)),
-                    "ninja_calibration_scope": "task_local",
+                    "rake_auto_calibrate": bool(getattr(task_args, "rake_auto_calibrate", False)),
+                    "rake_calibration_scope": "task_local",
                 },
             )
 
         child_proc = subprocess.Popen(cmd, cwd=str(PROJECT_ROOT))
         _current_child_process[0] = child_proc
+        if session_screen is not None:
+            # The backdrop screen sits at a very high macOS window level so
+            # the desktop never flashes through while the child starts up.
+            # Left there, it can keep intercepting clicks meant for the
+            # child (same level, but the child is a background-launched
+            # process that macOS won't automatically hand focus to). Force
+            # the child to the foreground, then drop the backdrop back to a
+            # normal window level so it stops competing for input.
+            activate_process_by_pid(child_proc.pid)
+            reset_macos_window_level(session_screen)
         try:
             returncode = child_proc.wait()
         finally:

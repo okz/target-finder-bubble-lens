@@ -26,8 +26,9 @@ from target_finder_toolkit.experimental_session import (
     install_termination_cleanup_handler,
     show_break_screen,
     start_preloaded_techniques,
-    wait_for_initial_ninja_calibration,
-    wait_for_ninja_ready,
+    stop_preloaded_techniques,
+    wait_for_initial_rake_calibration,
+    wait_for_rake_ready,
     wait_for_preloaded_startup,
     write_event,
     write_annotation_control_file,
@@ -58,7 +59,7 @@ TECHNIQUE_LABEL_MAP = {
     "B": "semantic",
     "C": "bubble",
     "D": "dynaspot",
-    "E": "ninja_cursors",
+    "E": "rake_cursor",
 }
 RHO_TO_DENSITY = {round(value, 6): name for name, value in DENSITY_VALUES.items()}
 
@@ -476,7 +477,7 @@ def _build_block_command(
     session_id: str,
     session_dir: Path,
     annotation_control_file: Path | None,
-    ninja_control_file: Path | None,
+    rake_control_file: Path | None,
     no_launch_technique: bool,
 ) -> list[str]:
     block_log_file = session_dir / _block_log_name(session_id, block_index, block)
@@ -551,37 +552,37 @@ def _build_block_command(
         str(args.dynaspot_lag),
         "--dynaspot-reduce-time",
         str(args.dynaspot_reduce_time),
-        "--ninja-camera-index",
-        str(args.ninja_camera_index),
-        "--ninja-spacing",
-        str(args.ninja_spacing),
-        "--ninja-gaze-smoothing",
-        str(args.ninja_gaze_smoothing),
-        "--ninja-gaze-gain-x",
-        str(args.ninja_gaze_gain_x),
-        "--ninja-gaze-gain-y",
-        str(args.ninja_gaze_gain_y),
-        "--ninja-gaze-offset-x",
-        str(args.ninja_gaze_offset_x),
-        "--ninja-gaze-offset-y",
-        str(args.ninja_gaze_offset_y),
-        "--ninja-selection-hold",
-        str(args.ninja_selection_hold),
-        "--ninja-calib-points",
-        str(args.ninja_calib_points),
+        "--rake-camera-index",
+        str(args.rake_camera_index),
+        "--rake-spacing",
+        str(args.rake_spacing),
+        "--rake-gaze-smoothing",
+        str(args.rake_gaze_smoothing),
+        "--rake-gaze-gain-x",
+        str(args.rake_gaze_gain_x),
+        "--rake-gaze-gain-y",
+        str(args.rake_gaze_gain_y),
+        "--rake-gaze-offset-x",
+        str(args.rake_gaze_offset_x),
+        "--rake-gaze-offset-y",
+        str(args.rake_gaze_offset_y),
+        "--rake-selection-hold",
+        str(args.rake_selection_hold),
+        "--rake-calib-points",
+        str(args.rake_calib_points),
     ]
-    if getattr(args, "ninja_hide_debug_status", False):
-        cmd.append("--ninja-hide-debug-status")
+    if getattr(args, "rake_hide_debug_status", False):
+        cmd.append("--rake-hide-debug-status")
     if no_launch_technique:
         cmd.append("--no-launch-technique")
         cmd.append("--keep-control-files")
     if annotation_control_file is not None:
         cmd += ["--annotation-control-file", str(annotation_control_file)]
-    if ninja_control_file is not None and block.technique == "ninja_cursors":
-        cmd += ["--ninja-control-file", str(ninja_control_file)]
-    if block.technique == "ninja_cursors":
+    if rake_control_file is not None and block.technique == "rake_cursor":
+        cmd += ["--rake-control-file", str(rake_control_file)]
+    if block.technique == "rake_cursor":
         # The synthetic task already knows every target it generated.  Keep
-        # Ninja on the no-live-TargetFinder path; the annotation control file
+        # Rake on the no-live-TargetFinder path; the annotation control file
         # still supplies the known target list used by the interaction logic.
         cmd.append("--without-targetfinder")
     if args.windowed:
@@ -594,20 +595,20 @@ def _build_block_command(
         cmd.append("--semantic-display")
     if args.semantic_disable_accel:
         cmd.append("--semantic-disable-accel")
-    if args.ninja_screen_width_cm is not None:
-        cmd += ["--ninja-screen-width-cm", str(args.ninja_screen_width_cm)]
-    if args.ninja_screen_height_cm is not None:
-        cmd += ["--ninja-screen-height-cm", str(args.ninja_screen_height_cm)]
-    if args.ninja_lock_on_dwell:
-        cmd.append("--ninja-lock-on-dwell")
-    if getattr(args, "ninja_lock_on_key", False):
-        cmd.append("--ninja-lock-on-key")
-    if args.ninja_hide_gaze_point:
-        cmd.append("--ninja-hide-gaze-point")
-    if getattr(args, "ninja_snap_system_cursor_to_active", False):
-        cmd.append("--ninja-snap-system-cursor-to-active")
-    if args.ninja_auto_calibrate:
-        cmd.append("--ninja-auto-calibrate")
+    if args.rake_screen_width_cm is not None:
+        cmd += ["--rake-screen-width-cm", str(args.rake_screen_width_cm)]
+    if args.rake_screen_height_cm is not None:
+        cmd += ["--rake-screen-height-cm", str(args.rake_screen_height_cm)]
+    if args.rake_lock_on_dwell:
+        cmd.append("--rake-lock-on-dwell")
+    if getattr(args, "rake_lock_on_key", False):
+        cmd.append("--rake-lock-on-key")
+    if args.rake_hide_gaze_point:
+        cmd.append("--rake-hide-gaze-point")
+    if getattr(args, "rake_snap_system_cursor_to_active", False):
+        cmd.append("--rake-snap-system-cursor-to-active")
+    if args.rake_auto_calibrate:
+        cmd.append("--rake-auto-calibrate")
     # Synthetic sessions use procedurally generated ground-truth targets,
     # not live TargetFinder/YOLO detections.
     return cmd
@@ -651,7 +652,7 @@ def run_block_in_process(
     session_log_file: Path,
     block_log_file: Path,
     annotation_control_file: Path | None,
-    ninja_control_file: Path | None,
+    rake_control_file: Path | None,
     preloaded: PreloadedTechnique | None,
     transition_screen=None,
 ) -> int:
@@ -703,7 +704,7 @@ def run_block_in_process(
         annotation_control_file=task_annotation_control_file,
         language=args.language,
         seed=None,
-        ninja_control_file=ninja_control_file if block.technique == "ninja_cursors" else None,
+        rake_control_file=rake_control_file if block.technique == "rake_cursor" else None,
         external_technique_active=bool(preloaded),
         cleanup_control_files=not bool(preloaded),
         quit_application_on_complete=False,
@@ -744,6 +745,179 @@ def run_block_in_process(
     window.deleteLater()
     app.processEvents()
     return exit_code
+
+
+def _wait_for_rake_ready_flow(
+    args,
+    *,
+    app,
+    session_screen,
+    preloaded_processes: dict,
+    session_log_file: Path,
+    write_session_end,
+) -> int | None:
+    """Waits for the rake_cursor preloaded process to finish warming up.
+
+    Always run once at session start regardless of where rake_cursor
+    falls in this participant's block order -- it only confirms the
+    process is alive and ready (e.g. so a later task in the same
+    comparative session can reuse an earlier calibration via
+    --rake-wait-ready without --rake-auto-calibrate); it does not run any
+    calibration UI, so unlike _run_rake_calibration_flow it's safe to keep
+    unconditional on block position.
+
+    Returns an exit code the caller should return immediately, or None to
+    continue normally.
+    """
+    if not (args.rake_auto_calibrate or getattr(args, "rake_wait_ready", False)):
+        return None
+    rake_ready = wait_for_rake_ready(
+        preloaded_processes,
+        session_log_file,
+        app=app,
+        abort_check=lambda: bool(session_screen.aborted),
+    )
+    if rake_ready == "aborted":
+        write_session_end("keyboard_escape_during_initialization")
+        return 130
+    if rake_ready == "exited":
+        write_session_end("rake_exited_during_initialization")
+        return 130
+    if rake_ready == "timeout":
+        write_session_end("rake_ready_timeout")
+        return 1
+    return None
+
+
+def _run_rake_calibration_flow(
+    args,
+    *,
+    app,
+    session_screen,
+    preloaded_processes: dict,
+    session_log_file: Path,
+    rake_control_file: Path,
+    write_session_end,
+) -> int | None:
+    """Runs the rake_cursor calibration screens (with retries).
+
+    Callable either right at session start (when rake_cursor is the first
+    technique block) or right before rake_cursor' own block starts later
+    in the rotation, so calibration stays fresh for whichever position rake
+    ends up in for this participant instead of always happening at t=0
+    regardless of how far away rake's block actually is. Assumes
+    _wait_for_rake_ready_flow already ran at session start.
+
+    Callers must only invoke this once per session: MAML adaptation
+    fine-tunes the same model weights in place and accumulates prior
+    calibration samples on every call (webeyetrack's adapt()), so
+    recalibrating a second time in the same session compounds and visibly
+    degrades accuracy instead of improving it.
+
+    Returns an exit code the caller should return immediately, or None to
+    continue normally.
+    """
+    if not args.rake_auto_calibrate:
+        return None
+
+    session_screen.show_content(
+        title="Eye-tracking calibration" if args.language == "English" else "Calibration du regard",
+        body=(
+            "Before the experiment starts, an eye-tracking calibration will be performed.\n"
+            "Look at each red point without moving your head until the next point appears."
+            if args.language == "English"
+            else "Avant de commencer l'expérience, une calibration du regard va être effectuée.\n"
+            "Regardez chaque point rouge sans bouger la tête jusqu'au point suivant."
+        ),
+        hint="Click Start when you are ready." if args.language == "English" else "Cliquez sur Commencer quand vous êtes prêt(e).",
+        button_text="Start calibration" if args.language == "English" else "Commencer la calibration",
+    )
+    write_event(session_log_file, {"type": "calibration_instructions"})
+    if session_screen.wait_for_continue():
+        write_session_end("keyboard_escape_before_calibration")
+        return 130
+
+    max_calibration_attempts = 5
+    calibration_result = None
+    calibration_payload: dict = {}
+    for calibration_attempt in range(1, max_calibration_attempts + 1):
+        retry_suffix_en = f" (attempt {calibration_attempt}/{max_calibration_attempts})" if calibration_attempt > 1 else ""
+        retry_suffix_fr = f" (tentative {calibration_attempt}/{max_calibration_attempts})" if calibration_attempt > 1 else ""
+        session_screen.show_content(
+            title=(
+                f"Calibration in progress{retry_suffix_en}"
+                if args.language == "English"
+                else f"Calibration en cours{retry_suffix_fr}"
+            ),
+            body=(
+                "Look at the red point displayed on the screen until calibration is finished."
+                if args.language == "English"
+                else "Regardez le point rouge affiché à l'écran jusqu'à la fin de la calibration."
+            ),
+            hint=(
+                "Do not click and avoid moving your head during this step."
+                if args.language == "English"
+                else "Ne cliquez pas et évitez de bouger la tête pendant cette étape."
+            ),
+            button_text=None,
+            level_offset=0,
+        )
+        rake_control_file.write_text("calibrate", encoding="utf-8")
+        write_event(session_log_file, {"type": "calibration_start_requested", "attempt": calibration_attempt})
+        calibration_result, calibration_payload = wait_for_initial_rake_calibration(
+            preloaded_processes,
+            session_log_file,
+            app=app,
+            abort_check=lambda: bool(session_screen.aborted),
+        )
+        rake_control_file.write_text("paused", encoding="utf-8")
+        if calibration_result != "failed":
+            break
+        write_event(
+            session_log_file,
+            {"type": "calibration_attempt_failed", "attempt": calibration_attempt, **calibration_payload},
+        )
+        if calibration_attempt >= max_calibration_attempts:
+            break
+        mean_error_px = calibration_payload.get("mean_error_px")
+        error_detail_en = f" Measured error: {mean_error_px:.0f}px." if isinstance(mean_error_px, (int, float)) else ""
+        error_detail_fr = f" Erreur mesurée : {mean_error_px:.0f}px." if isinstance(mean_error_px, (int, float)) else ""
+        session_screen.show_content(
+            title="Calibration failed" if args.language == "English" else "Calibration échouée",
+            body=(
+                f"The calibration error was too high.{error_detail_en} Let's try again.\n"
+                "Sit closer to the screen, make sure your face is well lit, "
+                "sit still, and look directly at each red point until it disappears."
+                if args.language == "English"
+                else f"L'erreur de calibration était trop élevée.{error_detail_fr} Recommençons.\n"
+                "Rapprochez-vous de l'écran, assurez-vous que votre visage est bien éclairé, "
+                "restez immobile et regardez directement chaque point rouge jusqu'à ce qu'il disparaisse."
+            ),
+            hint="Click Retry when you are ready." if args.language == "English" else "Cliquez sur Réessayer quand vous êtes prêt(e).",
+            button_text="Retry calibration" if args.language == "English" else "Réessayer la calibration",
+        )
+        write_event(session_log_file, {"type": "calibration_retry_instructions", "attempt": calibration_attempt + 1})
+        if session_screen.wait_for_continue():
+            write_session_end("keyboard_escape_during_calibration")
+            return 130
+    if calibration_result in {"aborted", "cancelled", "failed"}:
+        write_session_end(
+            "keyboard_escape_during_calibration"
+            if calibration_result == "aborted"
+            else (
+                "rake_calibration_failed"
+                if calibration_result == "failed"
+                else "calibration_cancelled"
+            )
+        )
+        return 1 if calibration_result == "failed" else 130
+    if calibration_result == "exited":
+        write_session_end("rake_exited_during_calibration")
+        return 130
+    if calibration_result == "timeout":
+        write_session_end("rake_calibration_timeout")
+        return 1
+    return None
 
 
 def run_session(args) -> int:
@@ -834,8 +1008,8 @@ def run_session(args) -> int:
     install_qt_crash_guard()
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv[:1])
     session_screen = create_session_screen(windowed=args.windowed, language=args.language)
-    ninja_control_file = session_dir / "ninja_cursors.control"
-    ninja_control_file.write_text("paused", encoding="utf-8")
+    rake_control_file = session_dir / "rake_cursor.control"
+    rake_control_file.write_text("paused", encoding="utf-8")
     preloaded_processes: dict[str, PreloadedTechnique] = {}
 
     try:
@@ -851,12 +1025,12 @@ def run_session(args) -> int:
                 session_id=session_id,
                 output_dir=session_dir,
                 session_log=session_log_file,
-                ninja_control_file=ninja_control_file,
+                rake_control_file=rake_control_file,
             )
             _set_active_cleanup_state(
                 preloaded_processes=preloaded_processes,
                 session_log=session_log_file,
-                ninja_control_file=ninja_control_file,
+                rake_control_file=rake_control_file,
             )
             wait_for_preloaded_startup(
                 preloaded_processes,
@@ -869,129 +1043,35 @@ def run_session(args) -> int:
                 write_session_end("keyboard_escape_during_initialization")
                 return 130
 
-            if args.ninja_auto_calibrate or getattr(args, "ninja_wait_ready", False):
-                ninja_ready = wait_for_ninja_ready(
-                    preloaded_processes,
-                    session_log_file,
+            result = _wait_for_rake_ready_flow(
+                args,
+                app=app,
+                session_screen=session_screen,
+                preloaded_processes=preloaded_processes,
+                session_log_file=session_log_file,
+                write_session_end=write_session_end,
+            )
+            if result is not None:
+                return result
+
+            # Calibrate now only if rake_cursor is first in this
+            # participant's block order; otherwise it's deferred to right
+            # before rake_cursor' own block (see the "next_block" check in
+            # the block loop below), so calibration stays fresh for
+            # whichever position rake ends up in instead of always
+            # happening at t=0 regardless of how far away its block is.
+            if not ordered_blocks or ordered_blocks[0].technique == "rake_cursor":
+                result = _run_rake_calibration_flow(
+                    args,
                     app=app,
-                    abort_check=lambda: bool(session_screen.aborted),
+                    session_screen=session_screen,
+                    preloaded_processes=preloaded_processes,
+                    session_log_file=session_log_file,
+                    rake_control_file=rake_control_file,
+                    write_session_end=write_session_end,
                 )
-                if ninja_ready == "aborted":
-                    write_session_end("keyboard_escape_during_initialization")
-                    return 130
-                if ninja_ready == "exited":
-                    write_session_end("ninja_exited_during_initialization")
-                    return 130
-                if ninja_ready == "timeout":
-                    write_session_end("ninja_ready_timeout")
-                    return 1
-
-                if args.ninja_auto_calibrate:
-                    # Only calibrate once for the whole comparative session:
-                    # MAML adaptation fine-tunes the same model weights in
-                    # place and accumulates prior calibration samples on
-                    # every call (webeyetrack's adapt()), so recalibrating
-                    # again in a later task compounds and visibly degrades
-                    # accuracy instead of improving it. A later task without
-                    # this flag reuses the saved affine matrix via
-                    # ninjacursors.py's own startup load.
-                    session_screen.show_content(
-                        title="Eye-tracking calibration" if args.language == "English" else "Calibration du regard",
-                        body=(
-                            "Before the experiment starts, an eye-tracking calibration will be performed.\n"
-                            "Look at each red point without moving your head until the next point appears."
-                            if args.language == "English"
-                            else "Avant de commencer l'expérience, une calibration du regard va être effectuée.\n"
-                            "Regardez chaque point rouge sans bouger la tête jusqu'au point suivant."
-                        ),
-                        hint="Click Start when you are ready." if args.language == "English" else "Cliquez sur Commencer quand vous êtes prêt(e).",
-                        button_text="Start calibration" if args.language == "English" else "Commencer la calibration",
-                    )
-                    write_event(session_log_file, {"type": "calibration_instructions"})
-                    if session_screen.wait_for_continue():
-                        write_session_end("keyboard_escape_before_calibration")
-                        return 130
-
-                    max_calibration_attempts = 5
-                    calibration_result = None
-                    calibration_payload: dict = {}
-                    for calibration_attempt in range(1, max_calibration_attempts + 1):
-                        retry_suffix_en = f" (attempt {calibration_attempt}/{max_calibration_attempts})" if calibration_attempt > 1 else ""
-                        retry_suffix_fr = f" (tentative {calibration_attempt}/{max_calibration_attempts})" if calibration_attempt > 1 else ""
-                        session_screen.show_content(
-                            title=(
-                                f"Calibration in progress{retry_suffix_en}"
-                                if args.language == "English"
-                                else f"Calibration en cours{retry_suffix_fr}"
-                            ),
-                            body=(
-                                "Look at the red point displayed on the screen until calibration is finished."
-                                if args.language == "English"
-                                else "Regardez le point rouge affiché à l'écran jusqu'à la fin de la calibration."
-                            ),
-                            hint=(
-                                "Do not click and avoid moving your head during this step."
-                                if args.language == "English"
-                                else "Ne cliquez pas et évitez de bouger la tête pendant cette étape."
-                            ),
-                            button_text=None,
-                            level_offset=0,
-                        )
-                        ninja_control_file.write_text("calibrate", encoding="utf-8")
-                        write_event(session_log_file, {"type": "calibration_start_requested", "attempt": calibration_attempt})
-                        calibration_result, calibration_payload = wait_for_initial_ninja_calibration(
-                            preloaded_processes,
-                            session_log_file,
-                            app=app,
-                            abort_check=lambda: bool(session_screen.aborted),
-                        )
-                        ninja_control_file.write_text("paused", encoding="utf-8")
-                        if calibration_result != "failed":
-                            break
-                        write_event(
-                            session_log_file,
-                            {"type": "calibration_attempt_failed", "attempt": calibration_attempt, **calibration_payload},
-                        )
-                        if calibration_attempt >= max_calibration_attempts:
-                            break
-                        mean_error_px = calibration_payload.get("mean_error_px")
-                        error_detail_en = f" Measured error: {mean_error_px:.0f}px." if isinstance(mean_error_px, (int, float)) else ""
-                        error_detail_fr = f" Erreur mesurée : {mean_error_px:.0f}px." if isinstance(mean_error_px, (int, float)) else ""
-                        session_screen.show_content(
-                            title="Calibration failed" if args.language == "English" else "Calibration échouée",
-                            body=(
-                                f"The calibration error was too high.{error_detail_en} Let's try again.\n"
-                                "Sit closer to the screen, make sure your face is well lit, "
-                                "sit still, and look directly at each red point until it disappears."
-                                if args.language == "English"
-                                else f"L'erreur de calibration était trop élevée.{error_detail_fr} Recommençons.\n"
-                                "Rapprochez-vous de l'écran, assurez-vous que votre visage est bien éclairé, "
-                                "restez immobile et regardez directement chaque point rouge jusqu'à ce qu'il disparaisse."
-                            ),
-                            hint="Click Retry when you are ready." if args.language == "English" else "Cliquez sur Réessayer quand vous êtes prêt(e).",
-                            button_text="Retry calibration" if args.language == "English" else "Réessayer la calibration",
-                        )
-                        write_event(session_log_file, {"type": "calibration_retry_instructions", "attempt": calibration_attempt + 1})
-                        if session_screen.wait_for_continue():
-                            write_session_end("keyboard_escape_during_calibration")
-                            return 130
-                    if calibration_result in {"aborted", "cancelled", "failed"}:
-                        write_session_end(
-                            "keyboard_escape_during_calibration"
-                            if calibration_result == "aborted"
-                            else (
-                                "ninja_calibration_failed"
-                                if calibration_result == "failed"
-                                else "calibration_cancelled"
-                            )
-                        )
-                        return 1 if calibration_result == "failed" else 130
-                    if calibration_result == "exited":
-                        write_session_end("ninja_exited_during_calibration")
-                        return 130
-                    if calibration_result == "timeout":
-                        write_session_end("ninja_calibration_timeout")
-                        return 1
+                if result is not None:
+                    return result
 
         write_event(session_log_file, {"type": "initialization_end"})
         session_screen.show_content(
@@ -1015,9 +1095,9 @@ def run_session(args) -> int:
             write_session_end("keyboard_escape_before_first_block")
             return 130
 
-        if ordered_blocks and ordered_blocks[0].technique == "ninja_cursors":
+        if ordered_blocks and ordered_blocks[0].technique == "rake_cursor":
             session_screen.show_content(
-                title="Ninja Cursors",
+                title="Rake Cursor",
                 body=_technique_instruction(ordered_blocks[0], language=args.language),
                 hint=(
                     "Click Continue when you are ready."
@@ -1030,7 +1110,7 @@ def run_session(args) -> int:
                 session_log_file,
                 {
                     "type": "technique_instructions",
-                    "technique": "ninja_cursors",
+                    "technique": "rake_cursor",
                     "before_block_index": 1,
                     "block_id": ordered_blocks[0].block_id,
                 },
@@ -1065,7 +1145,7 @@ def run_session(args) -> int:
                 session_id=session_id,
                 session_dir=session_dir,
                 annotation_control_file=preloaded.annotation_control_file if preloaded else None,
-                ninja_control_file=ninja_control_file if preloaded_processes else None,
+                rake_control_file=rake_control_file if preloaded_processes else None,
                 no_launch_technique=bool(preloaded),
             )
             started = time.monotonic()
@@ -1111,7 +1191,7 @@ def run_session(args) -> int:
                 session_log_file=session_log_file,
                 block_log_file=block_log_file,
                 annotation_control_file=preloaded.annotation_control_file if preloaded else None,
-                ninja_control_file=ninja_control_file if preloaded_processes else None,
+                rake_control_file=rake_control_file if preloaded_processes else None,
                 preloaded=preloaded,
                 transition_screen=session_screen,
             )
@@ -1119,7 +1199,7 @@ def run_session(args) -> int:
             _drain_preloaded_outputs(preloaded_processes, session_log_file)
             if preloaded:
                 write_annotation_control_file(preloaded.annotation_control_file, state="inactive")
-            ninja_control_file.write_text("paused", encoding="utf-8")
+            rake_control_file.write_text("paused", encoding="utf-8")
             write_event(
                 session_log_file,
                 {
@@ -1154,6 +1234,18 @@ def run_session(args) -> int:
             trial_offset += block.movement_count
             if block_index < len(ordered_blocks):
                 next_block = ordered_blocks[block_index]
+
+                if block.technique == "rake_cursor" and "rake_cursor" in preloaded_processes:
+                    # Rake's own conditions are done for this task -- stop
+                    # the camera/gaze-model process now instead of leaving
+                    # it running (and heating up the machine) for the rest
+                    # of the session. The next task that needs rake
+                    # recalibrates from scratch anyway.
+                    stop_preloaded_techniques(
+                        {"rake_cursor": preloaded_processes["rake_cursor"]}, session_log_file
+                    )
+                    del preloaded_processes["rake_cursor"]
+
                 pause_started = time.time()
                 write_event(
                     session_log_file,
@@ -1193,13 +1285,26 @@ def run_session(args) -> int:
                     write_session_end("keyboard_escape_on_break", after_block_index=block_index)
                     return 130
 
+                if next_block.technique == "rake_cursor":
+                    result = _run_rake_calibration_flow(
+                        args,
+                        app=app,
+                        session_screen=session_screen,
+                        preloaded_processes=preloaded_processes,
+                        session_log_file=session_log_file,
+                        rake_control_file=rake_control_file,
+                        write_session_end=write_session_end,
+                    )
+                    if result is not None:
+                        return result
+
         write_session_end("completed")
         return 0
     finally:
         cleanup_session_resources(
             preloaded_processes=preloaded_processes,
             session_log=session_log_file,
-            ninja_control_file=ninja_control_file,
+            rake_control_file=rake_control_file,
             session_screen=session_screen,
             app=app,
         )

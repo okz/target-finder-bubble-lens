@@ -46,6 +46,70 @@ def warm_up_macos_keyboard_layout() -> None:
         pass
 
 
+def reset_macos_window_level(widget) -> bool:
+    """Drop a Qt widget's macOS window level back to normal.
+
+    ``raise_macos_window_above_system_ui`` parks a widget at
+    ``NSStatusWindowLevel`` so it survives above the menu bar/Dock while a
+    task subprocess starts up. If that widget is kept alive afterwards (as
+    the comparative-session backdrop is, to avoid a desktop flash between
+    tasks), it stays at that very high level indefinitely. A freshly
+    launched child process's own fullscreen window is raised to the same
+    level, and macOS same-level ordering does not reliably hand keyboard/
+    mouse focus to a background-launched process over an already-key window
+    -- so the leftover backdrop can keep intercepting clicks meant for the
+    child even though it is no longer visible on top. Call this once the
+    child window should own the screen, so the backdrop stops competing.
+    """
+    if sys.platform != "darwin":
+        return False
+    try:
+        import AppKit
+        import objc
+
+        widget.winId()
+        native_obj = objc.objc_object(c_void_p=c_void_p(int(widget.winId())))
+        ns_window = native_obj.window() if hasattr(native_obj, "window") else native_obj
+        if ns_window is None or not hasattr(ns_window, "setLevel_"):
+            return False
+        ns_window.setLevel_(int(AppKit.NSNormalWindowLevel))
+        return True
+    except Exception:
+        return False
+
+
+def activate_process_by_pid(pid: int, *, retries: int = 40, interval: float = 0.1) -> bool:
+    """Force a just-launched child process's app to take macOS focus.
+
+    A subprocess started from a background/non-interactive parent process
+    is not automatically granted key/foreground status by macOS -- its Qt
+    window can be fully drawn and raised to the front-most window level and
+    still not receive mouse/keyboard events because the parent's own window
+    remains "key". This polls for the child to register as a running
+    application (it needs a moment to spin up its own NSApplication/window)
+    and then explicitly activates it, ignoring the parent's own foreground
+    status.
+    """
+    if sys.platform != "darwin":
+        return False
+    try:
+        import AppKit
+    except Exception:
+        return False
+    import time as _time
+
+    for _ in range(max(1, retries)):
+        try:
+            running_app = AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
+            if running_app is not None:
+                running_app.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
+                return True
+        except Exception:
+            return False
+        _time.sleep(max(0.0, interval))
+    return False
+
+
 def raise_macos_window_above_system_ui(widget, *, level_offset: int = 0) -> bool:
     """Raise a Qt widget above the macOS menu bar/Dock without using Spaces fullscreen."""
     if sys.platform != "darwin":
