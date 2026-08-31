@@ -4,15 +4,20 @@ This toolkit accompanies the work presented in the article **TargetFinder: Detec
 It provides a real-time detection system using the YOLOv8 model to predict the bounding boxes of GUI widgets from desktop screenshots — **without requiring access to application internals or accessibility APIs**.
 
 The system is lightweight and easy to integrate, enabling the implementation of advanced interaction techniques.  
-As proof of concept, we include two interaction techniques built on top of TargetFinder:
+As proof of concept, we include four interaction techniques built on top of TargetFinder:
 
 - **[Bubble Cursor](https://dl.acm.org/doi/10.1145/1054972.1055012)** 
 - **[Semantic Pointing](https://dl.acm.org/doi/10.1145/985692.985758)** 
+- **DynaSpot**, a speed-dependent area cursor that grows while the mouse is moving fast and shrinks back to a point once it stops.
+- **Rake Cursor**, a gaze-driven cursor. Eight candidate cursors are laid out on screen, gaze selects one, and a confirm key or dwell locks it before clicking.
 
 > **Compatibility Note**  
-> TargetFinder uses the `mss` library for fast screen capture, and the detection engine is theoretically cross-platform. However, the system has been **validated only on Windows 10/11 and Linux (Ubuntu X11)**.
-> Operation is **not guaranteed on macOS**, where additional adaptations are required.  
-> Other Linux setups (e.g., distributions other than Ubuntu, or Wayland instead of X11) may also require adjustments.
+> TargetFinder uses the `mss` library for fast screen capture, and the detection engine is theoretically cross-platform. The toolkit has dedicated code paths for **Windows 10/11**, **Linux (Ubuntu X11)**, and **macOS** (mouse/keyboard interception on macOS goes through Quartz event taps).
+> Other Linux setups (e.g., distributions other than Ubuntu, or Wayland instead of X11) may still require adjustments.
+
+> **Known limitation: system cursor hiding on macOS**  
+> All four techniques hide the real system cursor while active (`mouse_utils.py`). On Windows this replaces the actual system cursor resources (`SetSystemCursor`), and on Linux it uses the X11 XFixes extension (`XFixesHideCursor`); both are a hard, persistent hide.  
+> On macOS there is no equivalent API. The toolkit hides the cursor with `NSCursor.hide()` / `CGDisplayHideCursor()`, but macOS can silently re-show the system cursor on its own, most reliably right when a mouse click is delivered. To compensate, a background thread polls every 10ms and re-hides the cursor as soon as it detects it became visible again (`_cursor_monitor_loop` in `mouse_utils.py`), and `rakecursor.py` also re-hides it at the start of its click handler. In practice this can still let the real cursor flash visible for a moment around a click on macOS; this is a platform limitation, not something that can be fixed from user-space code.
 
 
 ---
@@ -22,6 +27,29 @@ As proof of concept, we include two interaction techniques built on top of Targe
 ```bash
 pip install .
 ```
+
+`pip install .` covers TargetFinder, Bubble Cursor, Semantic Pointing, and DynaSpot. Rake Cursor needs the extra `gaze` dependencies (webeyetrack, tensorflow, mediapipe):
+
+```bash
+pip install .[gaze]
+```
+
+The YOLO detection weight is bundled with the package. Rake Cursor's gaze model weights (`face_landmarker_v2_with_blendshapes.task`, `blazegaze_mpiifacegaze.keras`) are not bundled: on first run, if they are not already cached locally, `rakecursor.py` downloads them from Google Cloud Storage and GitHub, so the machine needs internet access the first time Rake Cursor runs.
+
+<details>
+<summary><strong>macOS prerequisites (click to expand)</strong></summary>
+
+macOS restricts screen capture, and global mouse/keyboard monitoring, behind explicit user permissions. `pip install` cannot grant these; they must be enabled manually in **System Settings → Privacy & Security**:
+
+1. **Screen Recording**  
+   Required by `mss` to capture the screen. Without it, screenshots come back black or empty. Add your terminal app (or the Python interpreter you run the toolkit with) under **Screen Recording**.
+
+2. **Accessibility**  
+   Required by `pynput` to monitor and inject mouse/keyboard events, and by the control panel's browser-window-resize feature. Add the same app under **Accessibility**.
+
+After granting a permission, the app you added it for usually needs to be restarted (quit the terminal app and reopen it) before macOS applies the change.
+
+</details>
 
 <details>
 <summary><strong>Linux prerequisites (click to expand)</strong></summary>
@@ -202,6 +230,41 @@ After installation, `semanticpointing` runs the Semantic Pointing interaction te
 | ![Semantic Pointing - Windows](./demo/GIFs/windows_semantic_pointing.gif) | ![Semantic Pointing - Linux](./demo/GIFs/linux_semantic_pointing.gif) |
 | **Full video: (see in /demo/Videos/)** | **Full video: (see in /demo/Videos/)** |
 
+### DynaSpot
+
+After installation, `dynaspot` runs the DynaSpot interaction technique.
+
+| Option | Description |
+|--------|-------------|
+| `--min-speed` | Minimum cursor speed in px/s before the spot starts growing. |
+| `--spot-width` | Maximum spot diameter in pixels. |
+| `--lag` | Delay before the spot starts shrinking after motion stops. |
+| `--reduce-time` | Time taken to shrink the spot back to a point. |
+| `--include-text-targets` | Allow text annotations to be selected by DynaSpot. |
+
+### Rake Cursor
+
+After installation, `rakecursor` runs the Rake Cursor interaction technique. It requires the `gaze` optional dependencies (`pip install .[gaze]`) and a webcam.
+
+| Option | Description |
+|--------|-------------|
+| `--camera-index` | Webcam index used for gaze tracking. (`default = 0`). |
+| `--rake-spacing` | Center-to-center spacing in pixels between neighboring cursors in the 8-cursor layout. |
+| `--gaze-smoothing` | Smoothing applied to the estimated gaze point. |
+| `--lock-on-dwell` | Locks the active cursor after gaze stays on it for `--selection-hold` seconds. |
+| `--lock-on-key` | Locks the active cursor when the confirm key (space) is pressed, instead of dwell. |
+| `--calib-points` | Number of calibration points: 5, 9, or 13. |
+| `--auto-calibrate` | Runs calibration automatically on launch. |
+| `--language` | Language for the on-screen calibration messages: `French` or `English`. |
+
+Example:
+```bash
+rakecursor \
+  --lock-on-key \
+  --auto-calibrate \
+  --calib-points 5
+```
+
 
 #### Available options:
 
@@ -223,5 +286,21 @@ bubblecursor \
   --confidence 0.28 \
   --iou 0.3
 ```
+
+## Control Panel
+
+Instead of launching each technique from the command line, `control_panel.py` provides a PyQt6 GUI to configure and launch any of the four techniques, run the three qualitative tasks, and run the comparative experiment protocol used in the study.
+
+```bash
+python -m target_finder_toolkit.control_panel
+```
+
+The panel has three entry points:
+
+- **Tester une technique**: pick a technique and its parameters, then run it directly for manual testing.
+- **Trois tâches qualitatives**: runs the baseline qualitative tasks with a participant ID.
+- **Lancer une expérience**: runs the comparative protocol (per-technique tests or the full protocol) used to collect experiment data.
+
+Settings are saved to `control_panel_config.json` in the working directory and reloaded on the next launch.
 
 ---

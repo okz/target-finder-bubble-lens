@@ -3677,6 +3677,7 @@ error "No supported browser window found"
                 "--gaze-offset-x", str(DEFAULT_RAKE_GAZE_OFFSET_X),
                 "--gaze-offset-y", str(DEFAULT_RAKE_GAZE_OFFSET_Y),
                 "--selection-hold", str(cfg.rake_selection_hold),
+                "--language", cfg.language,
             ]
             if cfg.rake_lock_on_dwell:
                 cmd.append("--lock-on-dwell")
@@ -3688,8 +3689,11 @@ error "No supported browser window found"
                 cmd.append("--auto-calibrate")
             if not cfg.rake_show_gaze:
                 cmd.append("--hide-gaze-point")
-            if not cfg.rake_show_debug_status:
-                cmd.append("--hide-debug-status")
+            # Free test ("Tester une technique") always shows the gaze-tracking
+            # debug status bar, regardless of rake_show_debug_status -- that
+            # toggle only governs real experiment/session runs (see
+            # _build_synthetic_fitts_session_command, _build_comparative_session_command,
+            # _build_experiment_session_command), which stay off by default.
             if cfg.rake_snap_system_cursor:
                 cmd.append("--snap-system-cursor-to-active")
             if cfg.rake_without_targetfinder:
@@ -4252,11 +4256,13 @@ error "No supported browser window found"
         elif event == "failed":
             self._rake_calibration_status = "failed"
             mean_error_px = payload.get("mean_error_px")
-            self._rake_calibration_status_detail = (
-                f"{float(mean_error_px):.0f}px"
-                if mean_error_px is not None
-                else None
-            )
+            attempt = payload.get("attempt")
+            max_attempts = payload.get("max_attempts")
+            detail = f"{float(mean_error_px):.0f}px" if mean_error_px is not None else None
+            if attempt is not None and max_attempts is not None and attempt < max_attempts:
+                retry_suffix = f"retry {attempt + 1}/{max_attempts}"
+                detail = f"{detail}, {retry_suffix}" if detail else retry_suffix
+            self._rake_calibration_status_detail = detail
         elif event == "cancelled":
             self._rake_calibration_status = "cancelled"
             self._rake_calibration_status_detail = None

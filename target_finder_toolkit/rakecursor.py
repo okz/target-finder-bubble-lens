@@ -123,6 +123,10 @@ def _download_model_weight(filename: str, dest_dir: pathlib.Path) -> Optional[st
         return None
 
 
+def is_english(language: str | None) -> bool:
+    return str(language or "").strip().lower().startswith("en")
+
+
 def _emit_calibration_event(event: str, **payload):
     try:
         print(f"{_CALIB_EVENT_PREFIX}{json.dumps({'event': event, **payload}, ensure_ascii=False)}", flush=True)
@@ -402,6 +406,14 @@ class RakeCursor(QtWidgets.QWidget):
     DEFAULT_LOCK_ON_KEY = False
     LOCK_KEY_NAME = "space"
     DEFAULT_SHOW_GAZE = False
+    # Matches the retry cap used by the real-experiment calibration flow
+    # (experimental_session.py / synthetic_fitts_session.py's
+    # max_calibration_attempts). Only applied to the standalone --auto-calibrate
+    # launch used by "Tester une technique" (see _on_calib_done) -- the
+    # control-file-driven "calibrate" state used by real experiment sessions
+    # already retries externally with its own participant-facing screens, so
+    # it is left untouched here.
+    AUTO_CALIBRATE_MAX_ATTEMPTS = 5
     ACTIVE_ORANGE = QtGui.QColor(255, 132, 0, 230)
     ACTIVE_ORANGE_FILL = QtGui.QColor(255, 132, 0, 34)
     ACTIVE_ORANGE_TARGET_FILL = QtGui.QColor(255, 132, 0, 22)
@@ -486,6 +498,7 @@ class RakeCursor(QtWidgets.QWidget):
         auto_calibrate_delay: float = 1.5,
         experiment_control_file: str | None = None,
         disable_keyboard_quit: bool = False,
+        language: str = "French",
     ):
         if WebEyeTrack is None:
             raise RuntimeError(
@@ -529,8 +542,11 @@ class RakeCursor(QtWidgets.QWidget):
         self.show_debug_status = bool(show_debug_status)
         self.snap_system_cursor_to_active = bool(snap_system_cursor_to_active)
         self._calib_points = calib_points if calib_points in (5, 9, 13) else 5
+        self.language = language
         self._auto_calibrate = auto_calibrate
         self._auto_calibrate_delay_ms = max(0, int(round(float(auto_calibrate_delay) * 1000)))
+        self._calib_attempt = 0
+        self._calib_is_retry = False
         self._experiment_control_file = pathlib.Path(experiment_control_file) if experiment_control_file else None
         self._fixation_status_path = (
             pathlib.Path(str(self._experiment_control_file) + ".fixation")
@@ -588,6 +604,7 @@ class RakeCursor(QtWidgets.QWidget):
         self._calibration = None
         self._calib_status_text = ""
         self._calib_status_until = 0.0
+        self._calib_status_kind = "success"
         self._cleaned_up = False
         self._quitting = False
 
@@ -1582,12 +1599,30 @@ class RakeCursor(QtWidgets.QWidget):
 
     def _paint_calib_status(self, painter: QtGui.QPainter):
         font = painter.font()
-        font.setPointSize(16)
+        font.setPointSize(32)
         font.setBold(True)
         painter.setFont(font)
-        painter.setPen(QtGui.QColor(80, 220, 120, 240))
-        text_rect = QtCore.QRectF(0, self.height() / 2 - 20, self.width(), 40)
-        painter.drawText(text_rect, QtCore.Qt.AlignmentFlag.AlignCenter, self._calib_status_text)
+        color = (
+            QtGui.QColor(255, 110, 100, 255)
+            if self._calib_status_kind == "failed"
+            else QtGui.QColor(90, 235, 130, 255)
+        )
+        box_width = max(520.0, min(1200.0, float(self.width()) - 80.0))
+        text_rect = QtCore.QRectF(
+            (self.width() - box_width) / 2.0,
+            self.height() / 2.0 - 60.0,
+            box_width,
+            120.0,
+        )
+        painter.setPen(QtCore.Qt.PenStyle.NoPen)
+        painter.setBrush(QtGui.QColor(20, 20, 20, 190))
+        painter.drawRoundedRect(text_rect, 14.0, 14.0)
+        painter.setPen(color)
+        painter.drawText(
+            text_rect.adjusted(20.0, 10.0, -20.0, -10.0),
+            QtCore.Qt.AlignmentFlag.AlignCenter | QtCore.Qt.TextFlag.TextWordWrap,
+            self._calib_status_text,
+        )
 
     def _draw_debug_status(self, painter: QtGui.QPainter):
         painter.save()
@@ -1804,12 +1839,6 @@ class RakeCursor(QtWidgets.QWidget):
             painter.end()
             return
 
-        if self._calib_status_text and time.time() < self._calib_status_until:
-            painter = QtGui.QPainter(self)
-            painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
-            self._paint_calib_status(painter)
-            painter.end()
-
         if self._simulating_click:
             return
 
@@ -1819,7 +1848,12 @@ class RakeCursor(QtWidgets.QWidget):
             return
 
         active_id = self._active_cursor_from_gaze(points)
-        if mouse_moved and (self._cursor_locked or not self._lock_enabled()):
+        # lock_on_key: the mouse can drag the whole cursor grid at any time,
+        # both before and after pressing the confirm key -- only clicking is
+        # gated on being locked (see _cursor_can_click). lock_on_dwell keeps
+        # the mouse inert until locked, since dragging mid-dwell would fight
+        # the gaze-based candidate selection.
+        if mouse_moved and (self._cursor_locked or not self._lock_enabled() or self.lock_on_key):
             self._apply_mouse_delta(dx, dy)
             points = self._recover_points_if_all_offscreen(self._grid_points())
             active_id = self._active_cursor_from_gaze(points)
@@ -1860,6 +1894,8 @@ class RakeCursor(QtWidgets.QWidget):
                 painter.drawEllipse(QtCore.QPointF(gx, gy), 12, 12)
             if self.show_debug_status:
                 self._draw_debug_status(painter)
+            if self._calib_status_text and time.time() < self._calib_status_until:
+                self._paint_calib_status(painter)
             painter.end()
             return
 
@@ -1998,6 +2034,8 @@ class RakeCursor(QtWidgets.QWidget):
                 filtered_y=round(float(self._filtered_offset_y), 3),
                 **fields,
             )
+        if self._calib_status_text and time.time() < self._calib_status_until:
+            self._paint_calib_status(painter)
         painter.end()
 
     @QtCore.pyqtSlot()
@@ -2104,8 +2142,11 @@ class RakeCursor(QtWidgets.QWidget):
                 if self._calibration and self._calibration.is_calibrating:
                     self._calibration.abort()
                     self._set_detector_capture_suspended(False)
-                    self._calib_status_text = "Calibration cancelled"
-                    self._calib_status_until = time.time() + 2.0
+                    self._calib_status_kind = "failed"
+                    self._calib_status_text = (
+                        "Calibration cancelled" if is_english(self.language) else "Calibration annulée"
+                    )
+                    self._calib_status_until = time.time() + 3.5
                     _emit_calibration_event("cancelled")
                 if not self.disable_keyboard_quit:
                     self._queue_quit("keyboard_esc")
@@ -2127,8 +2168,39 @@ class RakeCursor(QtWidgets.QWidget):
             self._pressed_keys.discard(key)
 
         warm_up_macos_keyboard_layout()
-        self._keyboard_listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+        kwargs = {"on_press": on_press, "on_release": on_release}
+        if sys.platform == "darwin":
+            kwargs["darwin_intercept"] = self._intercept_keyboard_event
+        self._keyboard_listener = keyboard.Listener(**kwargs)
         self._keyboard_listener.start()
+
+    # macOS virtual keycode for the physical space bar.
+    _MACOS_SPACE_KEYCODE = 49
+
+    def _intercept_keyboard_event(self, event_type, event):
+        """Swallow the confirm-key (space) event at the OS level so it does
+        not leak through to whatever app has real keyboard focus -- e.g.
+        Finder interpreting a stray space as "open Quick Look" and popping up
+        a file preview. pynput's plain Listener only *observes* keys, it does
+        not consume them, so without this the space key still reaches Finder
+        underneath the (keyboard-focus-less) overlay window. Only intercepts
+        when lock_on_key is active; everything else passes through untouched.
+        """
+        if not self.lock_on_key:
+            return event
+        try:
+            import Quartz
+        except Exception:
+            return event
+        if event_type not in (Quartz.kCGEventKeyDown, Quartz.kCGEventKeyUp):
+            return event
+        try:
+            keycode = Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventKeycode)
+        except Exception:
+            return event
+        if keycode == self._MACOS_SPACE_KEYCODE:
+            return None
+        return event
 
     def _install_quit_shortcut(self):
         if not self.disable_keyboard_quit:
@@ -2171,6 +2243,10 @@ class RakeCursor(QtWidgets.QWidget):
     def _start_calibration(self):
         if self._calibration and self._calibration.is_calibrating:
             return
+        if self._calib_is_retry:
+            self._calib_is_retry = False
+        else:
+            self._calib_attempt = 1
         self._gaze_blocked_reason = None
         sw, sh = self._screen_px_dimensions
         self._set_detector_capture_suspended(True)
@@ -2193,7 +2269,8 @@ class RakeCursor(QtWidgets.QWidget):
         self._set_detector_capture_suspended(False)
         if success:
             self._gaze_blocked_reason = None
-            self._calib_status_text = f"Calibrated! Error: {mean_error_px:.0f}px"
+            self._calib_status_kind = "success"
+            self._calib_status_text = "Calibrated!" if is_english(self.language) else "Calibré !"
             correction_values = self._calibration.correction_values if self._calibration is not None else None
             if correction_values:
                 matrix_value = correction_values.get("rake_affine_matrix")
@@ -2219,7 +2296,10 @@ class RakeCursor(QtWidgets.QWidget):
                 correction_values=correction_values,
             )
         else:
-            self._calib_status_text = "Calibration failed"
+            self._calib_status_kind = "failed"
+            self._calib_status_text = (
+                "Calibration failed" if is_english(self.language) else "Calibration échouée"
+            )
             self.gaze_gain_x = float(self.DEFAULT_GAZE_GAIN_X)
             self.gaze_gain_y = float(self.DEFAULT_GAZE_GAIN_Y)
             self.gaze_offset_x = float(self.DEFAULT_GAZE_OFFSET_X)
@@ -2241,8 +2321,42 @@ class RakeCursor(QtWidgets.QWidget):
             _emit_calibration_event(
                 "failed",
                 mean_error_px=round(float(mean_error_px), 3) if mean_error_px is not None else None,
+                attempt=self._calib_attempt,
+                max_attempts=self.AUTO_CALIBRATE_MAX_ATTEMPTS,
             )
-        self._calib_status_until = time.time() + 3.0
+            # Auto-retry, same as the real experiment's calibration screen
+            # (up to AUTO_CALIBRATE_MAX_ATTEMPTS total attempts) -- but only
+            # for the standalone --auto-calibrate launch used by "Tester une
+            # technique". A real experiment session drives calibration itself
+            # via the control-file "calibrate" state and already retries
+            # externally, so it is left alone (_experiment_control_file is set
+            # there).
+            if (
+                self._auto_calibrate
+                and self._experiment_control_file is None
+                and self._calib_attempt < self.AUTO_CALIBRATE_MAX_ATTEMPTS
+            ):
+                self._calib_attempt += 1
+                self._calib_is_retry = True
+                self._calib_status_text = (
+                    f"Calibration failed, retrying... ({self._calib_attempt}/{self.AUTO_CALIBRATE_MAX_ATTEMPTS})"
+                    if is_english(self.language)
+                    else f"Calibration échouée, nouvel essai... ({self._calib_attempt}/{self.AUTO_CALIBRATE_MAX_ATTEMPTS})"
+                )
+                self._calib_status_until = time.time() + 2.2
+                QtCore.QTimer.singleShot(2200, self._start_calibration)
+                return
+            else:
+                self._calib_status_text = (
+                    f"Calibration failed after {self._calib_attempt} attempt(s). "
+                    "Please recalibrate."
+                    if is_english(self.language)
+                    else f"Calibration échouée après {self._calib_attempt} tentative(s). "
+                    "Veuillez relancer une calibration."
+                )
+                self._calib_status_until = time.time() + 8.0
+                return
+        self._calib_status_until = time.time() + 4.0
 
     def _set_detector_capture_suspended(self, suspended: bool):
         if self.detector is None:
@@ -2288,6 +2402,29 @@ class RakeCursor(QtWidgets.QWidget):
         except Exception:
             return event
         if self._in_system_reserved_area(int(px), int(py)):
+            # The real cursor happened to land in the menu bar / dock (e.g. the
+            # locked cursor was near the top edge and snap_system_cursor moved
+            # the real pointer there). The click still passes through to macOS
+            # untouched, but without this the lock/pending-click state was
+            # never cleared here -- since this branch returns before reaching
+            # the mouseUp cleanup below -- so the cursor stayed green forever
+            # after a click that happened to land in that area.
+            if event_type == Quartz.kCGEventLeftMouseUp:
+                if self.logger is not None:
+                    self.logger.log_click(
+                        raw=[round(float(px), 3), round(float(py), 3)],
+                        effective=[round(float(px), 3), round(float(py), 3)],
+                        redirected=False,
+                        target=None,
+                        ignored=True,
+                        reason="system_reserved_area",
+                        **self._log_mode_fields(),
+                        **self._click_cursor_fields(),
+                    )
+                self._pending_click_point = None
+                self._pending_click_target = None
+                self._pending_click_cursor_id = None
+                self._unlock_cursor_selection()
             return event
         if not self._cursor_can_click():
             if event_type == Quartz.kCGEventLeftMouseUp and self.logger is not None:
@@ -2536,6 +2673,7 @@ def main():
     parser.add_argument("--experiment-control-file", default=None, help="Optional control file used by the experimental task to pause/resume cursor movement")
     parser.add_argument("--annotation-control-file", default=None, help="Use controlled-task annotations instead of live YOLO detection")
     parser.add_argument("--disable-keyboard-quit", action="store_true", help="Disable overlay-level q/Esc quit shortcuts; controlled experiments handle quitting")
+    parser.add_argument("--language", choices=["French", "English"], default="French", help="Language for on-screen calibration status messages")
     args = parser.parse_args()
 
     if WebEyeTrack is None:
@@ -2630,6 +2768,7 @@ def main():
         auto_calibrate_delay=args.auto_calibrate_delay,
         experiment_control_file=args.experiment_control_file,
         disable_keyboard_quit=args.disable_keyboard_quit,
+        language=args.language,
     )
 
 
