@@ -254,6 +254,7 @@ python tools/evaluate_synthetic_ambiguity.py `
 
 The initial synthetic gate result and the deliberately unrelaxed failed recall
 gate are recorded in `docs/synthetic-evaluation.md`.
+The real-gaze comparison procedure is in `docs/human-gate-b.md`.
 
 ### Semantic Pointing
 
