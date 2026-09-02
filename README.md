@@ -230,8 +230,8 @@ non-primary screens, malformed samples, and backward source timestamps. Tracker
 timestamps and packet-health fields are logged as diagnostics; local monotonic
 receipt time drives the interaction state. A visible status badge reports
 tracking validity, and loss of valid samples closes an open lens safely.
-Event logs also include the fixation-center offset from the nearest target as a
-diagnostic proxy; it is explicitly not applied as a calibration correction.
+Event logs also include the fixation-center offset from the current Bubble
+winner as a selection diagnostic.
 
 Gate B's three comparison conditions are available as
 `--mode bubble|forced-lens|auto-lens`. The forced condition still requires a
@@ -252,8 +252,8 @@ python tools/evaluate_synthetic_ambiguity.py `
   --report artifacts/synthetic-evaluation.json
 ```
 
-The initial synthetic gate result and the deliberately unrelaxed failed recall
-gate are recorded in `docs/synthetic-evaluation.md`.
+The zero-bias, selection-ambiguity gate result and the deliberately unrelaxed
+failed recall gate are recorded in `docs/synthetic-evaluation.md`.
 The real-gaze comparison procedure is in `docs/human-gate-b.md`.
 
 ### Semantic Pointing

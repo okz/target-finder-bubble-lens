@@ -461,18 +461,18 @@ class LensOverlay(QtWidgets.QWidget):
             return
         decision = step.decision
         for event in step.events:
-            nearest_offset = None
+            selection_diagnostic = None
             if decision.center is not None and decision.target_solution is not None:
                 primary = decision.target_solution.primary
                 if primary is not None:
                     dx = primary.center.x - decision.center.x
                     dy = primary.center.y - decision.center.y
-                    nearest_offset = {
+                    selection_diagnostic = {
                         "target_id": primary.id,
                         "dx_px": dx,
                         "dy_px": dy,
                         "distance_px": math.hypot(dx, dy),
-                        "interpretation": "nearest-target offset; not a calibration correction",
+                        "interpretation": "fixation-center offset from current Bubble winner",
                     }
             payload = {
                 "t_ms": sample.t_ms,
@@ -494,7 +494,7 @@ class LensOverlay(QtWidgets.QWidget):
                 },
                 "snapshot_generation": self._snapshot.generation,
                 "pointer_diagnostics": self.pointer_provider.diagnostics(),
-                "calibration_bias_diagnostic": nearest_offset,
+                "selection_diagnostic": selection_diagnostic,
             }
             if event == "lens_opened" and self._frozen is not None:
                 payload["lens"] = {

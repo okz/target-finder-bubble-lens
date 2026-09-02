@@ -130,8 +130,8 @@ def test_dry_run_confirmation_logs_selection_and_never_clicks(qtbot, tmp_path):
     assert '"target_id": 2' in content
     assert all(isinstance(event, dict) for event in events)
     opened = next(event for event in events if event.get("event") == "lens_opened")
-    assert opened["calibration_bias_diagnostic"]["interpretation"].endswith(
-        "not a calibration correction"
+    assert opened["selection_diagnostic"]["interpretation"] == (
+        "fixation-center offset from current Bubble winner"
     )
 
 

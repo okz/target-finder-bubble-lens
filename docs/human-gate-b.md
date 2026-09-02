@@ -61,8 +61,7 @@ finds no blocking issue.
 
 Retain the application JSONL logs. They include tracking transitions, rejected
 packet counts, trigger state, candidate IDs, fixation spread, ambiguity score,
-and a nearest-target offset diagnostic. That offset is not used as a calibration
-correction.
+and the fixation-center offset from the current Bubble winner.
 
 ## Go criteria
 
@@ -73,7 +72,8 @@ correction.
 - At least 80% of lens appearances are followed by gaze entry within 700 ms.
 - Invalid tracking closes an open lens safely.
 
-The current synthetic automatic-trigger result is a failed gate: 20.51% recall
-against the required 80%, with 4.85% easy-cell false opens. Do not reinterpret
+The corrected synthetic automatic-trigger result is a failed gate: 14.26%
+selection-ambiguity recall against the required 80%, with 3.96% easy-cell false
+opens. Calibration offsets are excluded from those statistics. Do not reinterpret
 Gate B as permission to relax that result or enable clicks. After the run, make
 an explicit go, pivot, or stop decision before any selection-execution work.

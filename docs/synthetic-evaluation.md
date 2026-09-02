@@ -1,9 +1,13 @@
-# Synthetic ambiguity evaluation
+# Synthetic selection-ambiguity evaluation
 
-Run on 2 September 2026 with the initial trigger configuration. The deterministic
-matrix contains 360 cells and 36,000 trials across two-target and toolbar layouts,
-20/32/52 px targets, 0/8/16/32/64 px gaps, 3/8/15/25 px Gaussian noise, and
-0/15/30 px calibration bias.
+Run on 2 September 2026 after restricting the experiment to selection
+ambiguity. Known or user-compensated offsets and unknown calibration failures
+are explicitly excluded.
+
+The deterministic matrix contains 120 cells and 12,000 trials across
+two-target and toolbar layouts, 20/32/52 px targets, 0/8/16/32/64 px gaps, and
+3/8/15/25 px zero-mean Gaussian measurement noise. Every trace is centered on
+the intended target; no calibration-bias input or code path exists.
 
 ```powershell
 & '.\.venv-mamba\python.exe' tools\evaluate_synthetic_ambiguity.py `
@@ -11,36 +15,49 @@ matrix contains 360 cells and 36,000 trials across two-target and toolbar layout
   --report artifacts\synthetic-evaluation.json
 ```
 
-## Initial gate result
+## Ground truth
+
+For each cell, ordinary Bubble selection is evaluated at the final gaze sample
+over 100 seeds. A cell is selection-ambiguous only when:
+
+- zero-bias measurement noise produces at least two different Bubble winners;
+  and
+- the intended-target error rate is at least 20%.
+
+The report records winner counts and Shannon entropy for auditability. A
+consistently displaced but confident winner cannot satisfy this definition.
+Easy cells have at most 5% intended-target error.
+
+## Corrected gate result
 
 | Gate | Result | Pass? |
 |---|---:|:---:|
-| Recall on cells with baseline error >= 20% | 20.51% | No |
-| False-open rate on cells with baseline error <= 5% | 4.85% | Yes |
+| Recall on noise-driven selection-ambiguous cells | 14.26% | No |
+| False-open rate on easy cells | 3.96% | Yes |
 | Median open time | 200 ms | Yes |
 | Placement success | 100% | Yes |
 | Lens mapping accuracy | 100% | Yes |
 
-There were 168 ambiguous cells and 136 easy cells. The automatic trigger gate is
-therefore **failed**, even though timing, placement, mapping, and easy-cell
-specificity pass. The acceptance threshold has not been relaxed.
+There are 19 selection-ambiguous cells and 75 easy cells. The previous
+calibration-contaminated 20.51% recall value is superseded and must not be used.
 
-## One preliminary threshold sweep
+The remaining failure is genuine: most ambiguous cells occur at 25 px noise,
+and the current trigger often classifies that noisy fixation as movement because
+its fixation `r90` exceeds 35 px. This is a selection-ambiguity problem, not an
+offset problem.
 
-The following 20-seed-per-cell sweep was used only to check whether a simple
-threshold adjustment resolves the miss rate. It does not replace the 100-seed
-gate run.
+## Limited in-scope sensitivity check
+
+Two 12,000-trial alternatives were checked without calibration bias:
 
 | Fixation r90 | Uncertainty radius | Ambiguity threshold | Recall | False opens |
 |---:|---:|---:|---:|---:|
-| 45 px | 48 px | 0.65 | 21.55% | 4.97% |
-| 55 px | 48 px | 0.65 | 22.21% | 4.97% |
-| 55 px | 64 px | 0.65 | 42.53% | 10.61% |
-| 55 px | 64 px | 0.50 | 67.64% | 26.52% |
-| 60 px | 80 px | 0.65 | 61.61% | 18.82% |
-| 60 px | 80 px | 0.50 | 82.04% | 37.80% |
+| 35 px | 48 px | 0.65 | 14.26% | 3.96% |
+| 65 px | 64 px | 0.65 | 44.68% | 8.16% |
+| 65 px | 64 px | 0.50 | 67.53% | 25.88% |
 
-None of these candidates satisfies both the 80% recall and 10% false-open gates.
-The evidence currently supports keeping the initial parameters for live logging
-and evaluating Bubble-only, forced-lens, and automatic-lens conditions separately
-at Human Gate B. It does not support enabling operating-system clicks.
+The first relaxed candidate remains below the 80% recall gate. Relaxing the
+dominance threshold further still misses recall while exceeding the 10%
+false-open gate. Production defaults therefore remain unchanged pending a
+better fixation-versus-measurement-noise discriminator. No acceptance threshold
+has been relaxed, and no operating-system click path is enabled.
