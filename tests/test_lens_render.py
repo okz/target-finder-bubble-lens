@@ -4,12 +4,14 @@ import json
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
+import pytest
 
 from target_finder_toolkit.bubblegazelens import (
     LensOverlay,
     ReplayPointerProvider,
     SnapshotStore,
     TargetSnapshot,
+    load_replay_samples,
 )
 from target_finder_toolkit.lens_core import (
     LensConfig,
@@ -127,6 +129,10 @@ def test_dry_run_confirmation_logs_selection_and_never_clicks(qtbot, tmp_path):
     assert '"event": "selection_dry_run"' in content
     assert '"target_id": 2' in content
     assert all(isinstance(event, dict) for event in events)
+    opened = next(event for event in events if event.get("event") == "lens_opened")
+    assert opened["calibration_bias_diagnostic"]["interpretation"].endswith(
+        "not a calibration correction"
+    )
 
 
 def test_changed_candidate_set_invalidates_open_lens(qtbot):
@@ -150,3 +156,90 @@ def test_changed_candidate_set_invalidates_open_lens(qtbot):
 
     assert overlay.machine.state is LensStateName.COOLDOWN
     assert "target_invalidated" in overlay._last_step.events
+
+
+def test_tracking_loss_closes_an_open_lens(qtbot):
+    snapshot = TargetSnapshot(1, _targets(), _frame())
+    trace = [PointerSample(t, 431, 314) for t in range(0, 201, 20)]
+    overlay = LensOverlay(
+        lambda: snapshot,
+        ReplayPointerProvider(trace),
+        LensConfig(pointer_loss_timeout_ms=500),
+        screen_rect=Rect(0, 0, 1280, 720),
+        start_timer=False,
+    )
+    qtbot.addWidget(overlay)
+    for _ in trace:
+        overlay.tick()
+    assert overlay.machine.state is LensStateName.LENS_OPEN
+
+    invalid_trace = [PointerSample(t, 431, 314, valid=False) for t in range(220, 701, 20)]
+    overlay.pointer_provider = ReplayPointerProvider(invalid_trace)
+    for _ in invalid_trace:
+        overlay.tick()
+
+    assert overlay.machine.state is LensStateName.COOLDOWN
+    assert "pointer_lost" in overlay._last_step.events
+
+
+def test_bubble_mode_never_opens_the_lens(qtbot):
+    snapshot = TargetSnapshot(1, _targets(), _frame())
+    trace = [PointerSample(t, 431, 314) for t in range(0, 241, 20)]
+    overlay = LensOverlay(
+        lambda: snapshot,
+        ReplayPointerProvider(trace),
+        LensConfig(),
+        screen_rect=Rect(0, 0, 1280, 720),
+        start_timer=False,
+        interaction_mode="bubble",
+    )
+    qtbot.addWidget(overlay)
+
+    for _ in trace:
+        overlay.tick()
+
+    assert overlay.machine.state is LensStateName.NORMAL
+    assert overlay.frozen_lens is None
+
+
+def test_forced_lens_ignores_nearest_target_dominance(qtbot):
+    snapshot = TargetSnapshot(1, _targets(), _frame())
+    trace = [PointerSample(t, 428, 314) for t in range(0, 201, 20)]
+    overlay = LensOverlay(
+        lambda: snapshot,
+        ReplayPointerProvider(trace),
+        LensConfig(ambiguity_threshold=1.0),
+        screen_rect=Rect(0, 0, 1280, 720),
+        start_timer=False,
+        interaction_mode="forced-lens",
+    )
+    qtbot.addWidget(overlay)
+
+    for _ in trace:
+        overlay.tick()
+
+    assert overlay.machine.state is LensStateName.LENS_OPEN
+    assert overlay.frozen_lens is not None
+
+
+def test_load_replay_samples_validates_the_coordinate_contract(tmp_path):
+    replay = tmp_path / "trace.jsonl"
+    replay.write_text(
+        '{"t_ms": 0, "x": 200, "y": 300, "valid": true, "screen": "primary"}\n'
+        '{"t_ms": 20, "x": 201, "y": 301, "valid": false, "screen": "primary"}\n',
+        encoding="utf-8",
+    )
+
+    samples = load_replay_samples(replay)
+
+    assert samples == (
+        PointerSample(0, 200, 300, True),
+        PointerSample(20, 201, 301, False),
+    )
+
+    replay.write_text(
+        '{"t_ms": 0, "x": 0.5, "y": 0.5, "valid": true, "screen": "primary"}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="logical pixels"):
+        load_replay_samples(replay)

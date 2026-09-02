@@ -213,6 +213,32 @@ closes the lens, and `q` quits. It contains no operating-system click path.
 bubblegazelens --log artifacts/lens-events.jsonl
 ```
 
+For a tracker-neutral gaze feed, send newline-free JSON datagrams containing
+primary-screen logical pixels to localhost and select the UDP source:
+
+```powershell
+bubblegazelens --pointer udp --udp-port 4242 `
+  --log artifacts/gaze-events.jsonl
+```
+
+```json
+{"t_ms": 1234.5, "x": 812.2, "y": 498.1, "valid": true, "screen": "primary"}
+```
+
+The adapter binds only to `127.0.0.1`. It rejects normalized coordinates,
+non-primary screens, malformed samples, and backward source timestamps. Tracker
+timestamps and packet-health fields are logged as diagnostics; local monotonic
+receipt time drives the interaction state. A visible status badge reports
+tracking validity, and loss of valid samples closes an open lens safely.
+Event logs also include the fixation-center offset from the nearest target as a
+diagnostic proxy; it is explicitly not applied as a calibration correction.
+
+Gate B's three comparison conditions are available as
+`--mode bubble|forced-lens|auto-lens`. The forced condition still requires a
+stable fixation near at least two plausible targets; it ignores only the
+nearest-target dominance threshold. JSONL replay traces use the same logical
+pixel fields and can be run with `--pointer replay --replay-file PATH`.
+
 Run the deterministic core, replay, and offscreen rendering checks with:
 
 ```powershell
@@ -221,7 +247,13 @@ python tools/replay_lens.py `
   --scenarios tests/fixtures/lens `
   --report artifacts/replay-report.json `
   --contact-sheet artifacts/contact-sheet.png
+python tools/evaluate_synthetic_ambiguity.py `
+  --seeds 100 `
+  --report artifacts/synthetic-evaluation.json
 ```
+
+The initial synthetic gate result and the deliberately unrelaxed failed recall
+gate are recorded in `docs/synthetic-evaluation.md`.
 
 ### Semantic Pointing
 

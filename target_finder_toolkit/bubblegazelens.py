@@ -6,10 +6,11 @@ import argparse
 import json
 import math
 import signal
+import socket
 import sys
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Callable, Protocol, Sequence
 
@@ -85,10 +86,18 @@ class SnapshotStore:
 
 
 class PointerProvider(Protocol):
+    label: str
+
     def get_sample(self) -> PointerSample | None: ...
+
+    def diagnostics(self) -> dict: ...
+
+    def close(self) -> None: ...
 
 
 class MousePointerProvider:
+    label = "MOUSE PROXY"
+
     def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
         self._clock = clock
         self._started_at = clock()
@@ -102,13 +111,198 @@ class MousePointerProvider:
             valid=True,
         )
 
+    def diagnostics(self) -> dict:
+        return {"provider": "mouse", "coordinate_space": "logical_px"}
+
+    def close(self) -> None:
+        pass
+
 
 class ReplayPointerProvider:
+    label = "REPLAY"
+
     def __init__(self, samples: Sequence[PointerSample]) -> None:
         self._samples = iter(samples)
 
     def get_sample(self) -> PointerSample | None:
         return next(self._samples, None)
+
+    def diagnostics(self) -> dict:
+        return {"provider": "replay", "coordinate_space": "logical_px"}
+
+    def close(self) -> None:
+        pass
+
+
+def load_replay_samples(path: Path) -> tuple[PointerSample, ...]:
+    samples: list[PointerSample] = []
+    previous_t_ms: float | None = None
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+            t_ms = float(payload["t_ms"])
+            x = float(payload["x"])
+            y = float(payload["y"])
+            valid = payload.get("valid", True)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+            raise ValueError(f"Invalid replay sample at {path}:{line_number}") from error
+        if not all(math.isfinite(value) for value in (t_ms, x, y)):
+            raise ValueError(f"Non-finite replay sample at {path}:{line_number}")
+        if not isinstance(valid, bool):
+            raise ValueError(f"Replay validity must be boolean at {path}:{line_number}")
+        if payload.get("screen", "primary") != "primary":
+            raise ValueError(f"Replay samples must use the primary screen at {path}:{line_number}")
+        if valid and 0.0 <= x <= 1.0 and 0.0 <= y <= 1.0:
+            raise ValueError(f"Replay coordinates must be logical pixels at {path}:{line_number}")
+        if previous_t_ms is not None and t_ms < previous_t_ms:
+            raise ValueError(f"Replay timestamps moved backwards at {path}:{line_number}")
+        samples.append(PointerSample(t_ms=t_ms, x=x, y=y, valid=valid))
+        previous_t_ms = t_ms
+    if not samples:
+        raise ValueError(f"Replay file has no samples: {path}")
+    return tuple(samples)
+
+
+class UdpGazeProvider:
+    """Receive a generic logical-pixel gaze stream on localhost only.
+
+    Datagrams are UTF-8 JSON objects such as::
+
+        {"t_ms": 1234.5, "x": 812.2, "y": 498.1,
+         "valid": true, "screen": "primary"}
+
+    Local receipt time drives the state machine, avoiding assumptions about the
+    tracker process's clock. The supplied timestamp is retained for diagnostics.
+    """
+
+    label = "UDP GAZE"
+
+    def __init__(
+        self,
+        port: int = 4242,
+        *,
+        hold_valid_ms: float = 50.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if not 0 <= port <= 65535:
+            raise ValueError("UDP port must be between 0 and 65535")
+        if hold_valid_ms < 0:
+            raise ValueError("hold_valid_ms cannot be negative")
+        self._clock = clock
+        self._started_at = clock()
+        self._hold_valid_ms = hold_valid_ms
+        self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._socket.bind(("127.0.0.1", port))
+        self._socket.setblocking(False)
+        self.port = int(self._socket.getsockname()[1])
+        self._last_point = Point(0.0, 0.0)
+        self._last_packet_valid = False
+        self._last_receipt_s: float | None = None
+        self._last_source_t_ms: float | None = None
+        self._received_packets = 0
+        self._dropped_packets = 0
+        self._last_drop_reason: str | None = None
+        self._closed = False
+
+    @staticmethod
+    def _number(value) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        number = float(value)
+        return number if math.isfinite(number) else None
+
+    def _drop(self, reason: str) -> None:
+        self._dropped_packets += 1
+        self._last_drop_reason = reason
+
+    def _accept_payload(self, payload: object, received_at: float) -> None:
+        if not isinstance(payload, dict):
+            self._drop("payload_not_object")
+            return
+        if payload.get("screen") != "primary":
+            self._drop("screen_must_be_primary")
+            return
+        valid = payload.get("valid")
+        if not isinstance(valid, bool):
+            self._drop("valid_must_be_boolean")
+            return
+        x = self._number(payload.get("x"))
+        y = self._number(payload.get("y"))
+        if valid and (x is None or y is None):
+            self._drop("valid_sample_requires_finite_xy")
+            return
+        if x is not None and y is not None and valid and 0.0 <= x <= 1.0 and 0.0 <= y <= 1.0:
+            self._drop("normalized_coordinates_not_supported")
+            return
+        source_t_ms = self._number(payload.get("t_ms"))
+        if source_t_ms is None:
+            self._drop("t_ms_must_be_finite")
+            return
+        if self._last_source_t_ms is not None and source_t_ms < self._last_source_t_ms:
+            self._drop("source_timestamp_moved_backwards")
+            return
+        if x is not None and y is not None:
+            self._last_point = Point(x, y)
+        self._last_packet_valid = valid
+        self._last_receipt_s = received_at
+        self._last_source_t_ms = source_t_ms
+        self._received_packets += 1
+        self._last_drop_reason = None
+
+    def _drain(self, now_s: float) -> None:
+        while not self._closed:
+            try:
+                data, _address = self._socket.recvfrom(65535)
+            except BlockingIOError:
+                break
+            except OSError:
+                break
+            try:
+                payload = json.loads(data.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                self._drop("invalid_json")
+                continue
+            self._accept_payload(payload, now_s)
+
+    def get_sample(self) -> PointerSample:
+        now_s = self._clock()
+        self._drain(now_s)
+        age_ms = (
+            math.inf
+            if self._last_receipt_s is None
+            else (now_s - self._last_receipt_s) * 1000.0
+        )
+        return PointerSample(
+            t_ms=(now_s - self._started_at) * 1000.0,
+            x=self._last_point.x,
+            y=self._last_point.y,
+            valid=self._last_packet_valid and age_ms <= self._hold_valid_ms,
+        )
+
+    def diagnostics(self) -> dict:
+        now_s = self._clock()
+        age_ms = (
+            None
+            if self._last_receipt_s is None
+            else max(0.0, (now_s - self._last_receipt_s) * 1000.0)
+        )
+        return {
+            "provider": "udp",
+            "bind": f"127.0.0.1:{self.port}",
+            "coordinate_space": "logical_px",
+            "source_t_ms": self._last_source_t_ms,
+            "packet_age_ms": age_ms,
+            "received_packets": self._received_packets,
+            "dropped_packets": self._dropped_packets,
+            "last_drop_reason": self._last_drop_reason,
+        }
+
+    def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            self._socket.close()
 
 
 class JsonlLogger:
@@ -176,19 +370,29 @@ class LensOverlay(QtWidgets.QWidget):
         screen: QtGui.QScreen | None = None,
         screen_rect: Rect | None = None,
         start_timer: bool = True,
+        interaction_mode: str = "auto-lens",
     ) -> None:
         super().__init__()
         self.snapshot_reader = snapshot_reader
         self.pointer_provider = pointer_provider
         self.config = config or LensConfig()
+        if interaction_mode not in {"bubble", "forced-lens", "auto-lens"}:
+            raise ValueError(f"Unsupported interaction mode: {interaction_mode}")
+        self.interaction_mode = interaction_mode
         self.logger = logger or JsonlLogger(None, self.config)
-        self.machine = LensStateMachine(self.config)
+        machine_config = (
+            replace(self.config, ambiguity_threshold=0.0)
+            if interaction_mode == "forced-lens"
+            else self.config
+        )
+        self.machine = LensStateMachine(machine_config)
         self._snapshot = TargetSnapshot(0, (), None)
         self._last_sample: PointerSample | None = None
         self._last_step: LensStep | None = None
         self._frozen: FrozenLens | None = None
         self._selected_target: TargetRect | None = None
         self._close_requested = False
+        self._last_tracking_valid: bool | None = None
 
         if screen_rect is None:
             screen = screen or QtGui.QGuiApplication.primaryScreen()
@@ -223,6 +427,7 @@ class LensOverlay(QtWidgets.QWidget):
             self._timer = QtCore.QTimer(self)
             self._timer.timeout.connect(self.tick)
             self._timer.start(16)
+        self.logger.write({"event": "overlay_started", "interaction_mode": interaction_mode})
 
     @property
     def frozen_lens(self) -> FrozenLens | None:
@@ -256,6 +461,19 @@ class LensOverlay(QtWidgets.QWidget):
             return
         decision = step.decision
         for event in step.events:
+            nearest_offset = None
+            if decision.center is not None and decision.target_solution is not None:
+                primary = decision.target_solution.primary
+                if primary is not None:
+                    dx = primary.center.x - decision.center.x
+                    dy = primary.center.y - decision.center.y
+                    nearest_offset = {
+                        "target_id": primary.id,
+                        "dx_px": dx,
+                        "dy_px": dy,
+                        "distance_px": math.hypot(dx, dy),
+                        "interpretation": "nearest-target offset; not a calibration correction",
+                    }
             payload = {
                 "t_ms": sample.t_ms,
                 "event": event,
@@ -275,6 +493,8 @@ class LensOverlay(QtWidgets.QWidget):
                     "candidate_ids": list(step.frozen_candidate_ids),
                 },
                 "snapshot_generation": self._snapshot.generation,
+                "pointer_diagnostics": self.pointer_provider.diagnostics(),
+                "calibration_bias_diagnostic": nearest_offset,
             }
             if event == "lens_opened" and self._frozen is not None:
                 payload["lens"] = {
@@ -284,6 +504,19 @@ class LensOverlay(QtWidgets.QWidget):
                     "placement": self._frozen.placement.side,
                 }
             self.logger.write(payload)
+
+    def _log_tracking_transition(self, sample: PointerSample) -> None:
+        if self._last_tracking_valid is sample.valid:
+            return
+        self._last_tracking_valid = sample.valid
+        self.logger.write(
+            {
+                "t_ms": sample.t_ms,
+                "event": "tracking_valid" if sample.valid else "tracking_lost",
+                "pointer": {"x": sample.x, "y": sample.y, "valid": sample.valid},
+                "pointer_diagnostics": self.pointer_provider.diagnostics(),
+            }
+        )
 
     def _freeze_lens(self, step: LensStep) -> None:
         if self._snapshot.frame is None or step.decision.center is None:
@@ -353,13 +586,15 @@ class LensOverlay(QtWidgets.QWidget):
             return
         self._snapshot = self.snapshot_reader()
         self._last_sample = sample
+        self._log_tracking_transition(sample)
         close_reason = None
         if self.machine.state is LensStateName.LENS_OPEN and not self._frozen_candidates_are_valid():
             close_reason = "target_invalidated"
+        trigger_targets = () if self.interaction_mode == "bubble" else self._snapshot.targets
         step = self.machine.step(
             sample.t_ms,
             sample,
-            self._snapshot.targets,
+            trigger_targets,
             clean_frame_available=self._snapshot.frame is not None,
             close_requested=self._close_requested,
             close_reason=close_reason,
@@ -449,12 +684,30 @@ class LensOverlay(QtWidgets.QWidget):
         painter.setPen(WHITE)
         painter.drawText(label_rect, QtCore.Qt.AlignmentFlag.AlignCenter, "DRY RUN  •  look into lens  •  Enter confirms")
 
+    def _draw_tracking_status(self, painter: QtGui.QPainter) -> None:
+        valid = self._last_sample is not None and self._last_sample.valid
+        color = GREEN if valid else AMBER
+        state = "VALID" if valid else "LOST"
+        label = getattr(self.pointer_provider, "label", "POINTER")
+        status_rect = QtCore.QRectF(12, 12, 180, 26)
+        painter.fillRect(status_rect, DARK)
+        painter.setPen(QtCore.Qt.PenStyle.NoPen)
+        painter.setBrush(color)
+        painter.drawEllipse(QtCore.QPointF(27, 25), 5, 5)
+        painter.setPen(WHITE)
+        painter.drawText(
+            QtCore.QRectF(40, 12, 146, 26),
+            QtCore.Qt.AlignmentFlag.AlignVCenter,
+            f"{label}  {state}",
+        )
+
     def _paint(self, painter: QtGui.QPainter) -> None:
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         if self._last_step is not None and self._last_step.state is LensStateName.LENS_OPEN:
             self._draw_lens(painter)
         else:
             self._draw_bubble(painter)
+        self._draw_tracking_status(painter)
 
     def paintEvent(self, _event) -> None:
         painter = QtGui.QPainter(self)
@@ -528,12 +781,34 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--lens-timeout-ms", type=float, default=3000)
     parser.add_argument("--cooldown-ms", type=float, default=400)
     parser.add_argument("--include-text-targets", action="store_true")
+    parser.add_argument(
+        "--pointer",
+        choices=("mouse", "replay", "udp"),
+        default="mouse",
+        help="Logical-pixel pointer source (default: mouse)",
+    )
+    parser.add_argument("--replay-file", type=Path)
+    parser.add_argument(
+        "--udp-port",
+        type=int,
+        default=4242,
+        help="Localhost UDP gaze port when --pointer=udp (default: 4242)",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("bubble", "forced-lens", "auto-lens"),
+        default="auto-lens",
+        help="Gate B comparison condition (default: auto-lens)",
+    )
     parser.add_argument("--log", type=Path, default=Path("artifacts/lens-events.jsonl"))
     return parser
 
 
 def main() -> None:
-    args = _parser().parse_args()
+    parser = _parser()
+    args = parser.parse_args()
+    if args.pointer == "replay" and args.replay_file is None:
+        parser.error("--replay-file is required when --pointer=replay")
     from target_finder_toolkit.targetfinder import TargetFinder
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
@@ -564,7 +839,23 @@ def main() -> None:
         args.iou,
     )
     detector.set_callback(store.update, with_frame=True)
-    overlay = LensOverlay(store.read, MousePointerProvider(), config, logger)
+    pointer_provider: PointerProvider
+    if args.pointer == "udp":
+        pointer_provider = UdpGazeProvider(args.udp_port)
+    elif args.pointer == "replay":
+        try:
+            pointer_provider = ReplayPointerProvider(load_replay_samples(args.replay_file))
+        except (OSError, ValueError) as error:
+            parser.error(str(error))
+    else:
+        pointer_provider = MousePointerProvider()
+    overlay = LensOverlay(
+        store.read,
+        pointer_provider,
+        config,
+        logger,
+        interaction_mode=args.mode,
+    )
     detector.overlay_window["bubble-gaze-lens"] = overlay
 
     keyboard_controller: LiveKeyboardController | None = None
@@ -575,11 +866,20 @@ def main() -> None:
     keyboard_controller = LiveKeyboardController(overlay, stop)
     app.aboutToQuit.connect(detector.stop)
     app.aboutToQuit.connect(keyboard_controller.stop)
+    app.aboutToQuit.connect(pointer_provider.close)
     app.aboutToQuit.connect(logger.close)
     signal.signal(signal.SIGINT, lambda *_: stop())
 
-    print("Bubble Gaze Lens: single monitor, logical coordinates, Text excluded by default")
+    text_status = "included" if args.include_text_targets else "excluded"
+    print(f"Bubble Gaze Lens: single monitor, logical coordinates, Text {text_status}")
     print("Selection mode: DRY RUN (no operating-system click path exists)")
+    print(f"Interaction condition: {args.mode}")
+    if args.pointer == "udp":
+        print(f"Gaze input: UDP JSON on 127.0.0.1:{pointer_provider.port}")
+    elif args.pointer == "replay":
+        print(f"Gaze input: JSONL replay from {args.replay_file}")
+    else:
+        print("Gaze input: mouse proxy")
     print(f"Effective configuration: {json.dumps(asdict(config), default=sorted)}")
     print("Keys: Escape closes the lens, Enter logs a dry-run selection, q quits")
     overlay.show()
