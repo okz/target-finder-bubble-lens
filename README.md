@@ -200,6 +200,29 @@ After installation, `bubblecursor` runs the Bubble Cursor interaction technique.
 | ![Bubble Cursor - Windows](./demo/GIFs/windows_bubble_cursor.gif) | ![Bubble Cursor - Linux](./demo/GIFs/linux_bubble_cursor.gif) |
 | **Full video: (see in /demo/Videos/)** | **Full video: (see in /demo/Videos/)** |
 
+### Ambiguity-triggered Bubble Gaze Lens prototype
+
+`bubblegazelens` launches a single-monitor, mouse-proxy prototype. After a
+stable 200 ms fixation near multiple plausible controls, it opens a fixed
+sidecar lens using the detector's clean frame and stable target IDs.
+
+The prototype is **dry-run only**: Enter logs the highlighted target, Escape
+closes the lens, and `q` quits. It contains no operating-system click path.
+
+```powershell
+bubblegazelens --log artifacts/lens-events.jsonl
+```
+
+Run the deterministic core, replay, and offscreen rendering checks with:
+
+```powershell
+python -m pytest -q
+python tools/replay_lens.py `
+  --scenarios tests/fixtures/lens `
+  --report artifacts/replay-report.json `
+  --contact-sheet artifacts/contact-sheet.png
+```
+
 ### Semantic Pointing
 
 After installation, `semanticpointing` runs the Semantic Pointing interaction technique.

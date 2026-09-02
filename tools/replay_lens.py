@@ -87,19 +87,31 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scenarios", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--contact-sheet", type=Path)
+    parser.add_argument("--render-dir", type=Path)
     args = parser.parse_args()
 
     results = [run_scenario(scenario) for scenario in _load_scenarios(args.scenarios)]
+    render_results = []
+    if args.contact_sheet is not None:
+        from render_lens_scenarios import render_scenarios
+
+        render_dir = args.render_dir or args.report.parent / "lens-renders"
+        render_results = render_scenarios(args.contact_sheet, render_dir)
     report = {
-        "passed": all(result["passed"] for result in results),
+        "passed": all(result["passed"] for result in results + render_results),
         "scenario_count": len(results),
         "passed_count": sum(result["passed"] for result in results),
         "results": results,
+        "render_scenario_count": len(render_results),
+        "render_passed_count": sum(result["passed"] for result in render_results),
+        "render_results": render_results,
     }
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2, default=sorted), encoding="utf-8")
     print(
-        f"{report['passed_count']}/{report['scenario_count']} scenarios passed; "
+        f"{report['passed_count']}/{report['scenario_count']} replays and "
+        f"{report['render_passed_count']}/{report['render_scenario_count']} renders passed; "
         f"report: {args.report}"
     )
     return 0 if report["passed"] else 1

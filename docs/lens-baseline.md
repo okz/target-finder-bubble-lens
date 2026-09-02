@@ -36,7 +36,8 @@ Run the deterministic milestone checks:
   tests\test_lens_state.py
 & '.\.venv-mamba\python.exe' tools\replay_lens.py `
   --scenarios tests\fixtures\lens `
-  --report artifacts\replay-report.json
+  --report artifacts\replay-report.json `
+  --contact-sheet artifacts\contact-sheet.png
 ```
 
 ## Safety status

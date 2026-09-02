@@ -25,6 +25,30 @@ class Point:
 
 
 @dataclass(frozen=True, slots=True)
+class Rect:
+    x: float
+    y: float
+    width: float
+    height: float
+
+    def __post_init__(self) -> None:
+        if self.width < 0 or self.height < 0:
+            raise ValueError("Rectangle width and height cannot be negative")
+
+    @property
+    def right(self) -> float:
+        return self.x + self.width
+
+    @property
+    def bottom(self) -> float:
+        return self.y + self.height
+
+    @property
+    def center(self) -> Point:
+        return Point(self.x + self.width / 2.0, self.y + self.height / 2.0)
+
+
+@dataclass(frozen=True, slots=True)
 class TargetRect:
     id: int
     x: float
@@ -77,6 +101,11 @@ class LensConfig:
     lens_timeout_ms: float = 3000.0
     pointer_loss_timeout_ms: float = 500.0
     cooldown_ms: float = 400.0
+    lens_size_px: float = 360.0
+    lens_scale: float = 3.0
+    lens_gap_px: float = 24.0
+    source_hull_padding_px: float = 12.0
+    fallback_lens_sizes_px: tuple[float, ...] = (320.0, 300.0, 280.0)
     confidence_threshold: float = 0.40
     duplicate_iou_threshold: float = 0.85
     duplicate_center_distance_px: float = 5.0
@@ -100,6 +129,12 @@ class LensConfig:
             raise ValueError("Pending cue cannot begin after the trigger window")
         if self.uncertainty_radius_px <= 0:
             raise ValueError("Uncertainty radius must be positive")
+        if self.lens_size_px <= 0 or self.lens_scale <= 0:
+            raise ValueError("Lens size and scale must be positive")
+        if self.lens_gap_px < 0 or self.source_hull_padding_px < 0:
+            raise ValueError("Lens gap and source padding cannot be negative")
+        if any(size <= 0 for size in self.fallback_lens_sizes_px):
+            raise ValueError("Fallback lens sizes must be positive")
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +169,14 @@ class WindowDecision:
     latest_solution: AmbiguitySolution | None = None
     sample_count: int = 0
     valid_sample_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class LensPlacement:
+    rect: Rect
+    source_hull: Rect
+    side: str
+    used_fallback: bool = False
 
 
 class LensStateName(str, Enum):
@@ -182,6 +225,149 @@ def intersection_over_union(left: TargetRect, right: TargetRect) -> float:
         return 0.0
     union = left.width * left.height + right.width * right.height - intersection
     return intersection / union
+
+
+def rect_intersection_area(left: Rect, right: Rect) -> float:
+    width = max(0.0, min(left.right, right.right) - max(left.x, right.x))
+    height = max(0.0, min(left.bottom, right.bottom) - max(left.y, right.y))
+    return width * height
+
+
+def union_rect(targets: Iterable[TargetRect], padding: float = 0.0) -> Rect:
+    targets = tuple(targets)
+    if not targets:
+        raise ValueError("At least one target is required")
+    left = min(target.x for target in targets) - padding
+    top = min(target.y for target in targets) - padding
+    right = max(target.x + target.width for target in targets) + padding
+    bottom = max(target.y + target.height for target in targets) + padding
+    return Rect(left, top, right - left, bottom - top)
+
+
+def _clamp_rect_axis(position: float, size: float, low: float, high: float) -> float:
+    return _clamp(position, low, max(low, high - size))
+
+
+def choose_lens_rect(
+    candidates: Iterable[TargetRect],
+    screen: Rect,
+    config: LensConfig = LensConfig(),
+) -> LensPlacement:
+    """Choose a deterministic, fixed sidecar placement for a candidate cluster."""
+
+    source_hull = union_rect(candidates, config.source_hull_padding_px)
+    sizes = (config.lens_size_px,) + tuple(config.fallback_lens_sizes_px)
+    for size in sizes:
+        if size > screen.width or size > screen.height:
+            continue
+        positions = (
+            (
+                "right",
+                source_hull.right + config.lens_gap_px,
+                _clamp_rect_axis(
+                    source_hull.center.y - size / 2.0,
+                    size,
+                    screen.y,
+                    screen.bottom,
+                ),
+            ),
+            (
+                "left",
+                source_hull.x - config.lens_gap_px - size,
+                _clamp_rect_axis(
+                    source_hull.center.y - size / 2.0,
+                    size,
+                    screen.y,
+                    screen.bottom,
+                ),
+            ),
+            (
+                "below",
+                _clamp_rect_axis(
+                    source_hull.center.x - size / 2.0,
+                    size,
+                    screen.x,
+                    screen.right,
+                ),
+                source_hull.bottom + config.lens_gap_px,
+            ),
+            (
+                "above",
+                _clamp_rect_axis(
+                    source_hull.center.x - size / 2.0,
+                    size,
+                    screen.x,
+                    screen.right,
+                ),
+                source_hull.y - config.lens_gap_px - size,
+            ),
+        )
+        for side, x, y in positions:
+            rect = Rect(x, y, size, size)
+            entirely_on_screen = (
+                rect.x >= screen.x
+                and rect.y >= screen.y
+                and rect.right <= screen.right
+                and rect.bottom <= screen.bottom
+            )
+            if entirely_on_screen and rect_intersection_area(rect, source_hull) == 0.0:
+                return LensPlacement(rect, source_hull, side, size != config.lens_size_px)
+
+    size = min(sizes[-1], screen.width, screen.height)
+    corners = (
+        ("fallback_top_right", screen.right - size, screen.y),
+        ("fallback_top_left", screen.x, screen.y),
+        ("fallback_bottom_right", screen.right - size, screen.bottom - size),
+        ("fallback_bottom_left", screen.x, screen.bottom - size),
+    )
+    choices = [
+        (rect_intersection_area(Rect(x, y, size, size), source_hull), index, side, x, y)
+        for index, (side, x, y) in enumerate(corners)
+    ]
+    _, _, side, x, y = min(choices)
+    return LensPlacement(Rect(x, y, size, size), source_hull, side, True)
+
+
+def choose_source_crop(center: Point, lens_rect: Rect, screen: Rect, scale: float) -> Rect:
+    if scale <= 0:
+        raise ValueError("Scale must be positive")
+    width = min(lens_rect.width / scale, screen.width)
+    height = min(lens_rect.height / scale, screen.height)
+    x = _clamp_rect_axis(center.x - width / 2.0, width, screen.x, screen.right)
+    y = _clamp_rect_axis(center.y - height / 2.0, height, screen.y, screen.bottom)
+    return Rect(x, y, width, height)
+
+
+def source_to_lens(point: Point, source_crop: Rect, lens_rect: Rect) -> Point:
+    return Point(
+        lens_rect.x + (point.x - source_crop.x) * lens_rect.width / source_crop.width,
+        lens_rect.y + (point.y - source_crop.y) * lens_rect.height / source_crop.height,
+    )
+
+
+def lens_to_source(point: Point, source_crop: Rect, lens_rect: Rect) -> Point:
+    return Point(
+        source_crop.x + (point.x - lens_rect.x) * source_crop.width / lens_rect.width,
+        source_crop.y + (point.y - lens_rect.y) * source_crop.height / lens_rect.height,
+    )
+
+
+def transform_target_to_lens(
+    target: TargetRect, source_crop: Rect, lens_rect: Rect
+) -> TargetRect:
+    top_left = source_to_lens(Point(target.x, target.y), source_crop, lens_rect)
+    bottom_right = source_to_lens(
+        Point(target.x + target.width, target.y + target.height), source_crop, lens_rect
+    )
+    return TargetRect(
+        id=target.id,
+        x=top_left.x,
+        y=top_left.y,
+        width=bottom_right.x - top_left.x,
+        height=bottom_right.y - top_left.y,
+        score=target.score,
+        class_id=target.class_id,
+    )
 
 
 def filter_and_deduplicate(
@@ -420,6 +606,7 @@ class LensStateMachine:
         *,
         clean_frame_available: bool = True,
         close_requested: bool = False,
+        close_reason: str | None = None,
     ) -> LensStep:
         if sample.t_ms != now_ms:
             raise ValueError("sample.t_ms must equal now_ms for deterministic stepping")
@@ -427,8 +614,8 @@ class LensStateMachine:
         if self.state is LensStateName.LENS_OPEN:
             if sample.valid:
                 self._last_valid_ms = now_ms
-            if close_requested:
-                return self._start_cooldown(now_ms, "lens_closed")
+            if close_requested or close_reason is not None:
+                return self._start_cooldown(now_ms, close_reason or "lens_closed")
             if self._opened_at_ms is not None and now_ms - self._opened_at_ms >= self.config.lens_timeout_ms:
                 return self._start_cooldown(now_ms, "lens_timed_out")
             if self._last_valid_ms is not None and now_ms - self._last_valid_ms >= self.config.pointer_loss_timeout_ms:
@@ -503,19 +690,28 @@ __all__ = [
     "AmbiguitySolution",
     "BubbleSolution",
     "LensConfig",
+    "LensPlacement",
     "LensStateMachine",
     "LensStateName",
     "LensStep",
     "Point",
+    "Rect",
     "PointerSample",
     "SELECTABLE_CLASS_IDS",
     "TargetRect",
     "WindowDecision",
     "ambiguity_solution",
     "bubble_solution",
+    "choose_lens_rect",
+    "choose_source_crop",
     "containment_distance",
     "evaluate_window",
     "filter_and_deduplicate",
     "intersection_over_union",
+    "lens_to_source",
     "point_rect_distance",
+    "rect_intersection_area",
+    "source_to_lens",
+    "transform_target_to_lens",
+    "union_rect",
 ]

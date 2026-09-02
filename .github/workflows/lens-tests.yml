@@ -1,0 +1,35 @@
+name: Lens tests
+
+on:
+  push:
+    branches: [main, feature/ambiguity-gaze-lens]
+  pull_request:
+
+jobs:
+  deterministic-lens:
+    runs-on: ubuntu-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: python -m pip install --editable ".[dev]"
+      - name: Unit and offscreen render tests
+        run: python -m pytest -q
+      - name: Replay report and contact sheet
+        run: >-
+          python tools/replay_lens.py
+          --scenarios tests/fixtures/lens
+          --report artifacts/replay-report.json
+          --contact-sheet artifacts/contact-sheet.png
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lens-test-artifacts
+          path: artifacts/
+          if-no-files-found: ignore

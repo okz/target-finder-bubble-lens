@@ -42,6 +42,7 @@ macos = [
 [project.scripts]
 targetfinder-gui = "target_finder_toolkit.targetfinder:main"
 bubblecursor     = "target_finder_toolkit.bubblecursor:main"
+bubblegazelens   = "target_finder_toolkit.bubblegazelens:main"
 semanticpointing = "target_finder_toolkit.semanticpointing:main"
 
 [project.urls]
