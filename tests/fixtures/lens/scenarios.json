@@ -1,0 +1,187 @@
+[
+  {
+    "name": "two_close_buttons_midpoint",
+    "targets": [
+      {"id": 1, "x": 100, "y": 100, "width": 20, "height": 20, "score": 0.95, "class_id": 0},
+      {"id": 2, "x": 125, "y": 100, "width": 20, "height": 20, "score": 0.94, "class_id": 0}
+    ],
+    "trace": [
+      {"t_ms": 0, "x": 122.5, "y": 110}, {"t_ms": 20, "x": 122.5, "y": 110},
+      {"t_ms": 40, "x": 122.5, "y": 110}, {"t_ms": 60, "x": 122.5, "y": 110},
+      {"t_ms": 80, "x": 122.5, "y": 110}, {"t_ms": 100, "x": 122.5, "y": 110},
+      {"t_ms": 120, "x": 122.5, "y": 110}, {"t_ms": 140, "x": 122.5, "y": 110},
+      {"t_ms": 160, "x": 122.5, "y": 110}, {"t_ms": 180, "x": 122.5, "y": 110},
+      {"t_ms": 200, "x": 122.5, "y": 110}
+    ],
+    "expected": {"lens_opens": true, "open_time_ms": 200}
+  },
+  {
+    "name": "two_close_buttons_small_jitter",
+    "targets": [
+      {"id": 1, "x": 100, "y": 100, "width": 20, "height": 20, "score": 0.95, "class_id": 0},
+      {"id": 2, "x": 125, "y": 100, "width": 20, "height": 20, "score": 0.94, "class_id": 0}
+    ],
+    "trace": [
+      {"t_ms": 0, "x": 121, "y": 109}, {"t_ms": 20, "x": 124, "y": 111},
+      {"t_ms": 40, "x": 122, "y": 110}, {"t_ms": 60, "x": 123, "y": 108},
+      {"t_ms": 80, "x": 121, "y": 112}, {"t_ms": 100, "x": 124, "y": 109},
+      {"t_ms": 120, "x": 122, "y": 111}, {"t_ms": 140, "x": 123, "y": 110},
+      {"t_ms": 160, "x": 121, "y": 108}, {"t_ms": 180, "x": 124, "y": 112},
+      {"t_ms": 200, "x": 122.5, "y": 110}
+    ],
+    "expected": {"lens_opens": true, "open_time_ms": 200}
+  },
+  {
+    "name": "three_close_mixed_controls",
+    "targets": [
+      {"id": 1, "x": 90, "y": 100, "width": 20, "height": 20, "score": 0.95, "class_id": 0},
+      {"id": 2, "x": 115, "y": 100, "width": 20, "height": 20, "score": 0.94, "class_id": 1},
+      {"id": 3, "x": 140, "y": 100, "width": 20, "height": 20, "score": 0.93, "class_id": 2}
+    ],
+    "trace": [
+      {"t_ms": 0, "x": 127.5, "y": 110}, {"t_ms": 20, "x": 127.5, "y": 110},
+      {"t_ms": 40, "x": 127.5, "y": 110}, {"t_ms": 60, "x": 127.5, "y": 110},
+      {"t_ms": 80, "x": 127.5, "y": 110}, {"t_ms": 100, "x": 127.5, "y": 110},
+      {"t_ms": 120, "x": 127.5, "y": 110}, {"t_ms": 140, "x": 127.5, "y": 110},
+      {"t_ms": 160, "x": 127.5, "y": 110}, {"t_ms": 180, "x": 127.5, "y": 110},
+      {"t_ms": 200, "x": 127.5, "y": 110}
+    ],
+    "expected": {"lens_opens": true, "open_time_ms": 200}
+  },
+  {
+    "name": "delayed_ambiguity",
+    "targets": [
+      {"id": 1, "x": 100, "y": 100, "width": 20, "height": 20, "score": 0.95, "class_id": 0},
+      {"id": 2, "x": 125, "y": 100, "width": 20, "height": 20, "score": 0.94, "class_id": 0}
+    ],
+    "trace": [
+      {"t_ms": 0, "x": 100, "y": 110}, {"t_ms": 20, "x": 100, "y": 110},
+      {"t_ms": 40, "x": 100, "y": 110}, {"t_ms": 60, "x": 100, "y": 110},
+      {"t_ms": 80, "x": 100, "y": 110}, {"t_ms": 100, "x": 100, "y": 110},
+      {"t_ms": 120, "x": 122.5, "y": 110}, {"t_ms": 140, "x": 122.5, "y": 110},
+      {"t_ms": 160, "x": 122.5, "y": 110}, {"t_ms": 180, "x": 122.5, "y": 110},
+      {"t_ms": 200, "x": 122.5, "y": 110}, {"t_ms": 220, "x": 122.5, "y": 110},
+      {"t_ms": 240, "x": 122.5, "y": 110}, {"t_ms": 260, "x": 122.5, "y": 110},
+      {"t_ms": 280, "x": 122.5, "y": 110}, {"t_ms": 300, "x": 122.5, "y": 110},
+      {"t_ms": 320, "x": 122.5, "y": 110}, {"t_ms": 340, "x": 122.5, "y": 110},
+      {"t_ms": 360, "x": 122.5, "y": 110}, {"t_ms": 380, "x": 122.5, "y": 110},
+      {"t_ms": 400, "x": 122.5, "y": 110}
+    ],
+    "expected": {"lens_opens": true, "open_time_min_ms": 320, "open_time_max_ms": 400}
+  },
+  {
+    "name": "one_button_only",
+    "targets": [{"id": 1, "x": 100, "y": 100, "width": 20, "height": 20, "score": 0.95, "class_id": 0}],
+    "trace": [
+      {"t_ms": 0, "x": 110, "y": 110}, {"t_ms": 50, "x": 110, "y": 110},
+      {"t_ms": 100, "x": 110, "y": 110}, {"t_ms": 150, "x": 110, "y": 110},
+      {"t_ms": 200, "x": 110, "y": 110}, {"t_ms": 250, "x": 110, "y": 110},
+      {"t_ms": 300, "x": 110, "y": 110}
+    ],
+    "expected": {"lens_opens": false}
+  },
+  {
+    "name": "far_apart_buttons",
+    "targets": [
+      {"id": 1, "x": 100, "y": 100, "width": 20, "height": 20, "score": 0.95, "class_id": 0},
+      {"id": 2, "x": 300, "y": 100, "width": 20, "height": 20, "score": 0.94, "class_id": 0}
+    ],
+    "trace": [
+      {"t_ms": 0, "x": 110, "y": 110}, {"t_ms": 50, "x": 110, "y": 110},
+      {"t_ms": 100, "x": 110, "y": 110}, {"t_ms": 150, "x": 110, "y": 110},
+      {"t_ms": 200, "x": 110, "y": 110}, {"t_ms": 250, "x": 110, "y": 110},
+      {"t_ms": 300, "x": 110, "y": 110}
+    ],
+    "expected": {"lens_opens": false}
+  },
+  {
+    "name": "text_is_excluded",
+    "targets": [
+      {"id": 1, "x": 100, "y": 100, "width": 20, "height": 20, "score": 0.95, "class_id": 0},
+      {"id": 2, "x": 125, "y": 100, "width": 20, "height": 20, "score": 0.94, "class_id": 3}
+    ],
+    "trace": [
+      {"t_ms": 0, "x": 122.5, "y": 110}, {"t_ms": 50, "x": 122.5, "y": 110},
+      {"t_ms": 100, "x": 122.5, "y": 110}, {"t_ms": 150, "x": 122.5, "y": 110},
+      {"t_ms": 200, "x": 122.5, "y": 110}, {"t_ms": 250, "x": 122.5, "y": 110},
+      {"t_ms": 300, "x": 122.5, "y": 110}
+    ],
+    "expected": {"lens_opens": false}
+  },
+  {
+    "name": "duplicate_boxes_collapse",
+    "targets": [
+      {"id": 1, "x": 100, "y": 100, "width": 30, "height": 30, "score": 0.80, "class_id": 0},
+      {"id": 2, "x": 101, "y": 101, "width": 30, "height": 30, "score": 0.95, "class_id": 0}
+    ],
+    "trace": [
+      {"t_ms": 0, "x": 115, "y": 115}, {"t_ms": 50, "x": 115, "y": 115},
+      {"t_ms": 100, "x": 115, "y": 115}, {"t_ms": 150, "x": 115, "y": 115},
+      {"t_ms": 200, "x": 115, "y": 115}, {"t_ms": 250, "x": 115, "y": 115},
+      {"t_ms": 300, "x": 115, "y": 115}
+    ],
+    "expected": {"lens_opens": false}
+  },
+  {
+    "name": "unstable_pointer",
+    "targets": [
+      {"id": 1, "x": 100, "y": 100, "width": 20, "height": 20, "score": 0.95, "class_id": 0},
+      {"id": 2, "x": 125, "y": 100, "width": 20, "height": 20, "score": 0.94, "class_id": 0}
+    ],
+    "trace": [
+      {"t_ms": 0, "x": 70, "y": 110}, {"t_ms": 20, "x": 170, "y": 110},
+      {"t_ms": 40, "x": 70, "y": 110}, {"t_ms": 60, "x": 170, "y": 110},
+      {"t_ms": 80, "x": 70, "y": 110}, {"t_ms": 100, "x": 170, "y": 110},
+      {"t_ms": 120, "x": 70, "y": 110}, {"t_ms": 140, "x": 170, "y": 110},
+      {"t_ms": 160, "x": 70, "y": 110}, {"t_ms": 180, "x": 170, "y": 110},
+      {"t_ms": 200, "x": 70, "y": 110}, {"t_ms": 220, "x": 170, "y": 110},
+      {"t_ms": 240, "x": 70, "y": 110}
+    ],
+    "expected": {"lens_opens": false}
+  },
+  {
+    "name": "excessive_invalid_samples",
+    "targets": [
+      {"id": 1, "x": 100, "y": 100, "width": 20, "height": 20, "score": 0.95, "class_id": 0},
+      {"id": 2, "x": 125, "y": 100, "width": 20, "height": 20, "score": 0.94, "class_id": 0}
+    ],
+    "trace": [
+      {"t_ms": 0, "x": 122.5, "y": 110, "valid": false}, {"t_ms": 20, "x": 122.5, "y": 110},
+      {"t_ms": 40, "x": 122.5, "y": 110}, {"t_ms": 60, "x": 122.5, "y": 110, "valid": false},
+      {"t_ms": 80, "x": 122.5, "y": 110}, {"t_ms": 100, "x": 122.5, "y": 110},
+      {"t_ms": 120, "x": 122.5, "y": 110, "valid": false}, {"t_ms": 140, "x": 122.5, "y": 110},
+      {"t_ms": 160, "x": 122.5, "y": 110}, {"t_ms": 180, "x": 122.5, "y": 110, "valid": false},
+      {"t_ms": 200, "x": 122.5, "y": 110}, {"t_ms": 220, "x": 122.5, "y": 110},
+      {"t_ms": 240, "x": 122.5, "y": 110, "valid": false}
+    ],
+    "expected": {"lens_opens": false}
+  },
+  {
+    "name": "low_confidence_second_target",
+    "targets": [
+      {"id": 1, "x": 100, "y": 100, "width": 20, "height": 20, "score": 0.95, "class_id": 0},
+      {"id": 2, "x": 125, "y": 100, "width": 20, "height": 20, "score": 0.20, "class_id": 0}
+    ],
+    "trace": [
+      {"t_ms": 0, "x": 122.5, "y": 110}, {"t_ms": 50, "x": 122.5, "y": 110},
+      {"t_ms": 100, "x": 122.5, "y": 110}, {"t_ms": 150, "x": 122.5, "y": 110},
+      {"t_ms": 200, "x": 122.5, "y": 110}, {"t_ms": 250, "x": 122.5, "y": 110},
+      {"t_ms": 300, "x": 122.5, "y": 110}
+    ],
+    "expected": {"lens_opens": false}
+  },
+  {
+    "name": "strong_nearest_target_advantage",
+    "targets": [
+      {"id": 1, "x": 100, "y": 100, "width": 20, "height": 20, "score": 0.95, "class_id": 0},
+      {"id": 2, "x": 150, "y": 100, "width": 20, "height": 20, "score": 0.94, "class_id": 0}
+    ],
+    "trace": [
+      {"t_ms": 0, "x": 110, "y": 110}, {"t_ms": 50, "x": 110, "y": 110},
+      {"t_ms": 100, "x": 110, "y": 110}, {"t_ms": 150, "x": 110, "y": 110},
+      {"t_ms": 200, "x": 110, "y": 110}, {"t_ms": 250, "x": 110, "y": 110},
+      {"t_ms": 300, "x": 110, "y": 110}
+    ],
+    "expected": {"lens_opens": false}
+  }
+]

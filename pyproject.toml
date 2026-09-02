@@ -29,6 +29,11 @@ classifiers = [
 keywords = ["yolo", "gui", "widgets", "detection", "hci"]
 
 [project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-qt",
+    "pillow",
+]
 macos = [
     "pyobjc-framework-Quartz>=10.0",
     "pyobjc-framework-Cocoa>=10.0",
@@ -52,3 +57,6 @@ include-package-data = true
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["target_finder_toolkit*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
