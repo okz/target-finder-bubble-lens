@@ -61,6 +61,53 @@ def test_unstable_window_is_rejected():
     assert decision.r90_px > 35
 
 
+def test_stationary_measurement_noise_is_ambiguity_not_pointer_movement():
+    points = [
+        (110, 110),
+        (145, 105),
+        (104, 118),
+        (140, 114),
+        (108, 103),
+        (138, 117),
+        (106, 108),
+        (142, 101),
+        (109, 116),
+        (139, 109),
+        (107, 112),
+    ]
+
+    decision = evaluate_window(_samples(points), AMBIGUOUS_TARGETS)
+
+    assert decision.r90_px > 20
+    assert decision.fixation_drift_px < 50
+    assert decision.stable
+    assert decision.selection_noise_score >= LensConfig().ambiguity_threshold
+    assert decision.ambiguous
+
+
+def test_noise_free_gaze_centered_on_one_control_is_not_ambiguous():
+    decision = evaluate_window(
+        _samples([(110, 110)] * 11),
+        AMBIGUOUS_TARGETS,
+    )
+
+    assert len(decision.target_solution.plausible) == 2
+    assert decision.selection_noise_score == 0.0
+    assert decision.stable
+    assert not decision.ambiguous
+
+
+def test_smooth_pointer_movement_is_rejected_by_fixation_drift():
+    decision = evaluate_window(
+        _samples([(80 + index * 10, 110) for index in range(11)]),
+        AMBIGUOUS_TARGETS,
+    )
+
+    assert decision.fixation_drift_px > LensConfig().fixation_drift_px
+    assert not decision.stable
+    assert not decision.ambiguous
+
+
 def test_invalid_samples_beyond_ratio_are_rejected():
     samples = [
         PointerSample(t, 122.5, 110, valid=(index % 4 != 0))

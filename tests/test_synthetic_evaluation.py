@@ -70,3 +70,11 @@ def test_trace_is_centered_on_the_intended_target_without_an_offset_parameter():
 
     assert abs(mean_x - intended.center.x) < 0.5
     assert abs(mean_y - intended.center.y) < 0.5
+
+
+def test_default_full_matrix_passes_selection_ambiguity_gates():
+    report = MODULE.evaluate(seeds=100)
+
+    assert report["passed"]
+    assert report["summary"]["selection_ambiguity_recall"] >= 0.80
+    assert report["summary"]["false_open_rate"] <= 0.10

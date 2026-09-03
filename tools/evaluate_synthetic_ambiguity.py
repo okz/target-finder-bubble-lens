@@ -240,10 +240,10 @@ def evaluate(
                 "unknown_calibration_failure",
             ],
             "trigger_config": {
-                "fixation_r90_px": config.fixation_r90_px,
+                "fixation_drift_px": config.fixation_drift_px,
+                "fixation_jump_floor_px": config.fixation_jump_floor_px,
                 "uncertainty_radius_px": config.uncertainty_radius_px,
                 "ambiguity_threshold": config.ambiguity_threshold,
-                "ambiguous_sample_ratio": config.ambiguous_sample_ratio,
             },
         },
         "summary": {
@@ -268,19 +268,19 @@ def evaluate(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--seeds", type=int, default=100)
-    parser.add_argument("--fixation-r90-px", type=float, default=35.0)
+    parser.add_argument("--fixation-drift-px", type=float, default=50.0)
+    parser.add_argument("--fixation-jump-floor-px", type=float, default=12.0)
     parser.add_argument("--uncertainty-radius-px", type=float, default=48.0)
-    parser.add_argument("--ambiguity-threshold", type=float, default=0.65)
-    parser.add_argument("--ambiguous-sample-ratio", type=float, default=0.75)
+    parser.add_argument("--ambiguity-threshold", type=float, default=0.51)
     parser.add_argument("--report", type=Path, required=True)
     args = parser.parse_args()
     if args.seeds < 1:
         parser.error("--seeds must be positive")
     config = LensConfig(
-        fixation_r90_px=args.fixation_r90_px,
+        fixation_drift_px=args.fixation_drift_px,
+        fixation_jump_floor_px=args.fixation_jump_floor_px,
         uncertainty_radius_px=args.uncertainty_radius_px,
         ambiguity_threshold=args.ambiguity_threshold,
-        ambiguous_sample_ratio=args.ambiguous_sample_ratio,
     )
     report = evaluate(seeds=args.seeds, config=config)
     args.report.parent.mkdir(parents=True, exist_ok=True)

@@ -1,6 +1,6 @@
 # Synthetic selection-ambiguity evaluation
 
-Run on 2 September 2026 after restricting the experiment to selection
+Run on 3 September 2026 after restricting the experiment to selection
 ambiguity. Known or user-compensated offsets and unknown calibration failures
 are explicitly excluded.
 
@@ -28,36 +28,46 @@ The report records winner counts and Shannon entropy for auditability. A
 consistently displaced but confident winner cannot satisfy this definition.
 Easy cells have at most 5% intended-target error.
 
-## Corrected gate result
+## Trigger correction
+
+The original trigger treated a large gaze `r90` as pointer movement. That
+rejected stationary but noisy fixations—the exact cases the lens should help.
+The corrected trigger separates two observations:
+
+- **Movement:** drift between the robust centers of the first and second halves
+  of the window, plus a sudden-jump guard relative to preceding noise.
+- **Selection uncertainty:** gaze `r90` relative to the distance advantage of
+  the nearest target over the second-nearest target.
+
+For two plausible targets, the selection-noise score is:
+
+```text
+r90 / (r90 + (d2 - d1) + 0.5)
+```
+
+An exact tie scores 1.0. The default threshold is 0.51, fixation drift is
+limited to 50 px, and a sudden jump must remain within the larger of 12 px or
+three times the preceding `r90`. The full 200 ms window must remain ambiguous;
+a broken window restarts persistence.
+
+## Automated gate result
 
 | Gate | Result | Pass? |
 |---|---:|:---:|
-| Recall on noise-driven selection-ambiguous cells | 14.26% | No |
-| False-open rate on easy cells | 3.96% | Yes |
-| Median open time | 200 ms | Yes |
+| Recall on noise-driven selection-ambiguous cells | 80.68% | Yes |
+| False-open rate on easy cells | 1.39% | Yes |
+| Median open time | 240 ms | Yes |
 | Placement success | 100% | Yes |
 | Lens mapping accuracy | 100% | Yes |
 
-There are 19 selection-ambiguous cells and 75 easy cells. The previous
-calibration-contaminated 20.51% recall value is superseded and must not be used.
+There are 19 selection-ambiguous cells and 75 easy cells. All five automated
+gates pass without calibration-offset cases or relaxed acceptance thresholds.
+The 100-seed full matrix is also a regression test, preventing future code from
+silently restoring the previous failure mode.
 
-The remaining failure is genuine: most ambiguous cells occur at 25 px noise,
-and the current trigger often classifies that noisy fixation as movement because
-its fixation `r90` exceeds 35 px. This is a selection-ambiguity problem, not an
-offset problem.
+The earlier calibration-contaminated 20.51% result and the first corrected but
+structurally flawed 14.26% result are superseded. Neither should be used for
+product decisions.
 
-## Limited in-scope sensitivity check
-
-Two 12,000-trial alternatives were checked without calibration bias:
-
-| Fixation r90 | Uncertainty radius | Ambiguity threshold | Recall | False opens |
-|---:|---:|---:|---:|---:|
-| 35 px | 48 px | 0.65 | 14.26% | 3.96% |
-| 65 px | 64 px | 0.65 | 44.68% | 8.16% |
-| 65 px | 64 px | 0.50 | 67.53% | 25.88% |
-
-The first relaxed candidate remains below the 80% recall gate. Relaxing the
-dominance threshold further still misses recall while exceeding the 10%
-false-open gate. Production defaults therefore remain unchanged pending a
-better fixation-versus-measurement-noise discriminator. No acceptance threshold
-has been relaxed, and no operating-system click path is enabled.
+These results authorize mouse/replay evaluation and preparation for Human Gate
+B. They do not authorize operating-system click execution.

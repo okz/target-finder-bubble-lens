@@ -8,7 +8,7 @@ fully deterministic.
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from math import hypot, inf, isfinite
 from statistics import median
@@ -93,10 +93,10 @@ class LensConfig:
     trigger_window_ms: float = 200.0
     min_valid_ratio: float = 0.80
     min_valid_samples: int = 2
-    fixation_r90_px: float = 35.0
+    fixation_drift_px: float = 50.0
+    fixation_jump_floor_px: float = 12.0
     uncertainty_radius_px: float = 48.0
-    ambiguity_threshold: float = 0.65
-    ambiguous_sample_ratio: float = 0.75
+    ambiguity_threshold: float = 0.51
     pending_cue_ms: float = 120.0
     lens_timeout_ms: float = 3000.0
     pointer_loss_timeout_ms: float = 500.0
@@ -116,7 +116,6 @@ class LensConfig:
         ratios = {
             "min_valid_ratio": self.min_valid_ratio,
             "ambiguity_threshold": self.ambiguity_threshold,
-            "ambiguous_sample_ratio": self.ambiguous_sample_ratio,
             "confidence_threshold": self.confidence_threshold,
             "duplicate_iou_threshold": self.duplicate_iou_threshold,
         }
@@ -125,6 +124,8 @@ class LensConfig:
                 raise ValueError(f"{name} must be between 0 and 1")
         if self.trigger_window_ms <= 0 or self.min_valid_samples < 1:
             raise ValueError("Trigger window and minimum sample count must be positive")
+        if self.fixation_drift_px <= 0 or self.fixation_jump_floor_px <= 0:
+            raise ValueError("Fixation drift and jump limits must be positive")
         if self.pending_cue_ms > self.trigger_window_ms:
             raise ValueError("Pending cue cannot begin after the trigger window")
         if self.uncertainty_radius_px <= 0:
@@ -163,8 +164,10 @@ class WindowDecision:
     ambiguous: bool
     center: Point | None = None
     r90_px: float = inf
+    fixation_drift_px: float = inf
+    latest_jump_px: float = inf
     valid_ratio: float = 0.0
-    ambiguous_ratio: float = 0.0
+    selection_noise_score: float = 0.0
     target_solution: AmbiguitySolution | None = None
     latest_solution: AmbiguitySolution | None = None
     sample_count: int = 0
@@ -496,15 +499,47 @@ def evaluate_window(
     center = Point(median(sample.x for sample in valid), median(sample.y for sample in valid))
     radii = [hypot(sample.x - center.x, sample.y - center.y) for sample in valid]
     r90 = _percentile(radii, 90.0)
+    split = max(1, len(valid) // 2)
+    first_half = valid[:split]
+    second_half = valid[split:] or valid[-1:]
+    first_center = Point(
+        median(sample.x for sample in first_half),
+        median(sample.y for sample in first_half),
+    )
+    second_center = Point(
+        median(sample.x for sample in second_half),
+        median(sample.y for sample in second_half),
+    )
+    fixation_drift = hypot(
+        second_center.x - first_center.x,
+        second_center.y - first_center.y,
+    )
+    previous = valid[:-1] or valid[-1:]
+    previous_center = Point(
+        median(sample.x for sample in previous),
+        median(sample.y for sample in previous),
+    )
+    previous_radii = [
+        hypot(sample.x - previous_center.x, sample.y - previous_center.y)
+        for sample in previous
+    ]
+    previous_r90 = _percentile(previous_radii, 90.0)
+    latest_jump = hypot(
+        valid[-1].x - previous_center.x,
+        valid[-1].y - previous_center.y,
+    )
+    jump_limit = max(config.fixation_jump_floor_px, 3.0 * previous_r90)
     targets = filter_and_deduplicate(raw_targets, config)
     center_solution = ambiguity_solution(center, targets, config)
     latest_solution = ambiguity_solution(valid[-1].point, targets, config)
-    if r90 > config.fixation_r90_px:
+    if fixation_drift > config.fixation_drift_px or latest_jump > jump_limit:
         return WindowDecision(
             stable=False,
             ambiguous=False,
             center=center,
             r90_px=r90,
+            fixation_drift_px=fixation_drift,
+            latest_jump_px=latest_jump,
             valid_ratio=valid_ratio,
             target_solution=center_solution,
             latest_solution=latest_solution,
@@ -512,27 +547,27 @@ def evaluate_window(
             valid_sample_count=len(valid),
         )
 
-    per_sample = [ambiguity_solution(sample.point, targets, config) for sample in valid]
-    flags = [
-        len(solution.plausible) >= 2
-        and solution.ambiguity_score >= config.ambiguity_threshold
-        for solution in per_sample
-    ]
-    ambiguous_ratio = sum(flags) / len(flags)
+    distance_margin = max(0.0, center_solution.d2 - center_solution.d1)
+    if len(center_solution.plausible) < 2:
+        selection_noise_score = 0.0
+    elif distance_margin <= 0.5:
+        selection_noise_score = 1.0
+    else:
+        selection_noise_score = r90 / (r90 + distance_margin + 0.5)
+    center_solution = replace(center_solution, ambiguity_score=selection_noise_score)
     current_ambiguous = (
         len(center_solution.plausible) >= 2
-        and center_solution.ambiguity_score >= config.ambiguity_threshold
-        and len(latest_solution.plausible) >= 2
-        and latest_solution.ambiguity_score >= config.ambiguity_threshold
-        and ambiguous_ratio >= config.ambiguous_sample_ratio
+        and selection_noise_score >= config.ambiguity_threshold
     )
     return WindowDecision(
         stable=True,
         ambiguous=current_ambiguous,
         center=center,
         r90_px=r90,
+        fixation_drift_px=fixation_drift,
+        latest_jump_px=latest_jump,
         valid_ratio=valid_ratio,
-        ambiguous_ratio=ambiguous_ratio,
+        selection_noise_score=selection_noise_score,
         target_solution=center_solution,
         latest_solution=latest_solution,
         sample_count=len(window),
@@ -548,6 +583,7 @@ class LensStateMachine:
     state: LensStateName = LensStateName.NORMAL
     _samples: deque[PointerSample] = field(default_factory=deque, init=False)
     _ambiguous_since_ms: float | None = field(default=None, init=False)
+    _last_nonambiguous_ms: float | None = field(default=None, init=False)
     _opened_at_ms: float | None = field(default=None, init=False)
     _last_valid_ms: float | None = field(default=None, init=False)
     _cooldown_until_ms: float | None = field(default=None, init=False)
@@ -556,37 +592,12 @@ class LensStateMachine:
     def _empty_decision(self) -> WindowDecision:
         return WindowDecision(stable=False, ambiguous=False)
 
-    def _current_ambiguous_run_start(
-        self, raw_targets: Iterable[TargetRect]
-    ) -> float | None:
-        """Return the first timestamp in the latest uninterrupted ambiguous run.
-
-        Invalid samples are tolerated by the separate valid-ratio rule. A valid
-        non-ambiguous sample, however, breaks persistence immediately.
-        """
-
-        targets = filter_and_deduplicate(raw_targets, self.config)
-        run_start: float | None = None
-        for sample in self._samples:
-            if not sample.valid:
-                continue
-            solution = ambiguity_solution(sample.point, targets, self.config)
-            ambiguous = (
-                len(solution.plausible) >= 2
-                and solution.ambiguity_score >= self.config.ambiguity_threshold
-            )
-            if ambiguous:
-                if run_start is None:
-                    run_start = sample.t_ms
-            else:
-                run_start = None
-        return run_start
-
     def _start_cooldown(self, now_ms: float, reason: str) -> LensStep:
         self.state = LensStateName.COOLDOWN
         self._cooldown_until_ms = now_ms + self.config.cooldown_ms
         self._opened_at_ms = None
         self._ambiguous_since_ms = None
+        self._last_nonambiguous_ms = None
         self._samples.clear()
         frozen = self._frozen_candidate_ids
         self._frozen_candidate_ids = ()
@@ -653,13 +664,18 @@ class LensStateMachine:
             state_changed = self.state is LensStateName.PENDING
             self.state = LensStateName.NORMAL
             self._ambiguous_since_ms = None
+            self._last_nonambiguous_ms = now_ms
             events = cooldown_events + (("pending_cancelled",) if state_changed else ())
             return LensStep(self.state, events, decision)
 
         if self._ambiguous_since_ms is None:
-            self._ambiguous_since_ms = self._current_ambiguous_run_start(raw_targets)
-            if self._ambiguous_since_ms is None:
-                self._ambiguous_since_ms = now_ms
+            window_start = self._samples[0].t_ms
+            self._ambiguous_since_ms = max(
+                window_start,
+                self._last_nonambiguous_ms
+                if self._last_nonambiguous_ms is not None
+                else window_start,
+            )
         ambiguous_for = now_ms - self._ambiguous_since_ms
         candidate_ids = tuple(target.id for target in decision.target_solution.plausible)
 

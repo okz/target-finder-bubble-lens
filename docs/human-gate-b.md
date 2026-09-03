@@ -72,8 +72,8 @@ and the fixation-center offset from the current Bubble winner.
 - At least 80% of lens appearances are followed by gaze entry within 700 ms.
 - Invalid tracking closes an open lens safely.
 
-The corrected synthetic automatic-trigger result is a failed gate: 14.26%
-selection-ambiguity recall against the required 80%, with 3.96% easy-cell false
-opens. Calibration offsets are excluded from those statistics. Do not reinterpret
-Gate B as permission to relax that result or enable clicks. After the run, make
-an explicit go, pivot, or stop decision before any selection-execution work.
+The corrected synthetic automatic-trigger gate passes with 80.68%
+selection-ambiguity recall and 1.39% easy-cell false opens. Calibration offsets
+are excluded from those statistics. Gate B is still required and is not
+permission to enable clicks. After the run, make an explicit go, pivot, or stop
+decision before any selection-execution work.

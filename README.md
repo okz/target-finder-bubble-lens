@@ -252,8 +252,8 @@ python tools/evaluate_synthetic_ambiguity.py `
   --report artifacts/synthetic-evaluation.json
 ```
 
-The zero-bias, selection-ambiguity gate result and the deliberately unrelaxed
-failed recall gate are recorded in `docs/synthetic-evaluation.md`.
+The passing zero-bias selection-ambiguity gate and trigger rationale are
+recorded in `docs/synthetic-evaluation.md`.
 The real-gaze comparison procedure is in `docs/human-gate-b.md`.
 
 ### Semantic Pointing

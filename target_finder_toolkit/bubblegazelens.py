@@ -481,6 +481,8 @@ class LensOverlay(QtWidgets.QWidget):
                 "pointer": {"x": sample.x, "y": sample.y, "valid": sample.valid},
                 "fixation": {
                     "r90_px": _json_number(decision.r90_px),
+                    "drift_px": _json_number(decision.fixation_drift_px),
+                    "latest_jump_px": _json_number(decision.latest_jump_px),
                     "valid_ratio": decision.valid_ratio,
                 },
                 "ambiguity": {
@@ -489,7 +491,7 @@ class LensOverlay(QtWidgets.QWidget):
                         if decision.target_solution is not None
                         else 0.0
                     ),
-                    "sample_ratio": decision.ambiguous_ratio,
+                    "selection_noise_score": decision.selection_noise_score,
                     "candidate_ids": list(step.frozen_candidate_ids),
                 },
                 "snapshot_generation": self._snapshot.generation,
@@ -771,10 +773,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--confidence", type=float, default=0.4)
     parser.add_argument("--iou", type=float, default=0.3)
     parser.add_argument("--trigger-window-ms", type=float, default=200)
-    parser.add_argument("--fixation-r90-px", type=float, default=35)
+    parser.add_argument("--fixation-drift-px", type=float, default=50)
+    parser.add_argument("--fixation-jump-floor-px", type=float, default=12)
     parser.add_argument("--uncertainty-radius-px", type=float, default=48)
-    parser.add_argument("--ambiguity-threshold", type=float, default=0.65)
-    parser.add_argument("--ambiguous-sample-ratio", type=float, default=0.75)
+    parser.add_argument("--ambiguity-threshold", type=float, default=0.51)
     parser.add_argument("--lens-size-px", type=float, default=360)
     parser.add_argument("--lens-scale", type=float, default=3.0)
     parser.add_argument("--lens-gap-px", type=float, default=24)
@@ -817,10 +819,10 @@ def main() -> None:
 
     config = LensConfig(
         trigger_window_ms=args.trigger_window_ms,
-        fixation_r90_px=args.fixation_r90_px,
+        fixation_drift_px=args.fixation_drift_px,
+        fixation_jump_floor_px=args.fixation_jump_floor_px,
         uncertainty_radius_px=args.uncertainty_radius_px,
         ambiguity_threshold=args.ambiguity_threshold,
-        ambiguous_sample_ratio=args.ambiguous_sample_ratio,
         lens_size_px=args.lens_size_px,
         lens_scale=args.lens_scale,
         lens_gap_px=args.lens_gap_px,
