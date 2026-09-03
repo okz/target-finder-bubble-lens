@@ -59,9 +59,15 @@ a broken window restarts persistence.
 | Median open time | 240 ms | Yes |
 | Placement success | 100% | Yes |
 | Lens mapping accuracy | 100% | Yes |
+| Full-layout suppression below the 2× minimum | 40% | Informational |
 
 There are 19 selection-ambiguous cells and 75 easy cells. All five automated
 gates pass without calibration-offset cases or relaxed acceptance thresholds.
+Mapping accuracy is measured only when the full candidate layout can be shown
+at the configured 2× minimum. The separate 40% suppression figure is an
+intentionally conservative stress check over complete synthetic toolbars,
+including distant controls that would not normally be in a runtime plausible
+candidate set; suppression produces no selectable lens.
 The 100-seed full matrix is also a regression test, preventing future code from
 silently restoring the previous failure mode.
 

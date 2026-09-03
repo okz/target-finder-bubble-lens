@@ -206,12 +206,28 @@ After installation, `bubblecursor` runs the Bubble Cursor interaction technique.
 stable 200 ms fixation near multiple plausible controls, it opens a fixed
 sidecar lens using the detector's clean frame and stable target IDs.
 
+The frozen crop expands to include every ambiguous candidate with a 20 px
+margin. It uses up to 3× magnification and suppresses the lens if the cluster
+cannot fit at 2× or greater. Placement tries right, left, below, and above at
+the full 360 px size, then a full-size bottom-centred dock; it never shrinks or
+overlaps the source controls.
+
 The prototype is **dry-run only**: Enter logs the highlighted target, Escape
 closes the lens, and `q` quits. It contains no operating-system click path.
+There is no fixed human-facing lens timeout. A 600 ms opening protection and a
+1,200 ms exit grace cover movement through the source-to-lens corridor. Moving
+back into the source, corridor, or lens cancels the grace period. Scrolling,
+significant source changes, target invalidation, and prolonged pointer loss
+close the frozen lens safely. Enter shows 200 ms of selection feedback before
+closing.
 
 ```powershell
 bubblegazelens --log artifacts/lens-events.jsonl
 ```
+
+The lifecycle and crop defaults can be tuned with
+`--transfer-protection-ms`, `--outside-grace-ms`, `--feedback-ms`,
+`--crop-margin-px`, and `--minimum-lens-scale`.
 
 For a tracker-neutral gaze feed, send newline-free JSON datagrams containing
 primary-screen logical pixels to localhost and select the UDP source:

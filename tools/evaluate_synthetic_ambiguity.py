@@ -20,7 +20,7 @@ from target_finder_toolkit.lens_core import (
     TargetRect,
     bubble_solution,
     choose_lens_rect,
-    choose_source_crop,
+    choose_candidate_crop,
     rect_intersection_area,
     source_to_lens,
     transform_target_to_lens,
@@ -74,22 +74,31 @@ def _trace(
     )
 
 
-def _mapping_checks(targets: tuple[TargetRect, ...], config: LensConfig) -> tuple[int, int, bool]:
-    placement = choose_lens_rect(targets, SCREEN, config)
+def _mapping_checks(
+    targets: tuple[TargetRect, ...], config: LensConfig
+) -> tuple[int, int, bool, bool]:
+    placement = choose_lens_rect(targets, SCREEN, config).placement
+    if placement is None:
+        return 0, 0, False, True
     placement_ok = rect_intersection_area(placement.rect, placement.source_hull) == 0.0
-    crop = choose_source_crop(
-        placement.source_hull.center,
+    crop_result = choose_candidate_crop(
+        targets,
         placement.rect,
         SCREEN,
-        config.lens_scale,
+        config,
     )
+    if crop_result.crop is None:
+        # Clusters below the configured useful scale are deliberately suppressed,
+        # not treated as incorrect source-to-lens mappings.
+        return 0, 0, placement_ok, True
+    crop = crop_result.crop
     transformed = tuple(transform_target_to_lens(target, crop, placement.rect) for target in targets)
     passed = 0
     for source_target, lens_target in zip(targets, transformed):
         destination = source_to_lens(source_target.center, crop, placement.rect)
         winner = bubble_solution(destination, transformed, config).primary
         passed += int(winner is not None and winner.id == lens_target.id)
-    return passed, len(targets), placement_ok
+    return passed, len(targets), placement_ok, False
 
 
 def evaluate(
@@ -107,17 +116,19 @@ def evaluate(
     mapping_total = 0
     placement_passed = 0
     placement_total = 0
+    geometry_suppressed = 0
     cell_index = 0
 
     for layout in layouts:
         for width in widths:
             for gap in gaps:
                 targets, intended = _targets(layout, width, gap)
-                mapped, mapping_count, placement_ok = _mapping_checks(targets, config)
+                mapped, mapping_count, placement_ok, suppressed = _mapping_checks(targets, config)
                 mapping_passed += mapped
                 mapping_total += mapping_count
                 placement_passed += int(placement_ok)
                 placement_total += 1
+                geometry_suppressed += int(suppressed)
                 for sigma in sigmas:
                     errors = 0
                     opens = 0
@@ -210,6 +221,9 @@ def evaluate(
     ]
     mapping_accuracy = mapping_passed / mapping_total if mapping_total else None
     placement_success = placement_passed / placement_total if placement_total else None
+    geometry_suppression_rate = (
+        geometry_suppressed / placement_total if placement_total else None
+    )
 
     gates = {
         "selection_ambiguity_recall_at_least_0_80": selection_ambiguity_recall is not None
@@ -259,6 +273,7 @@ def evaluate(
             ),
             "placement_success": placement_success,
             "mapping_accuracy": mapping_accuracy,
+            "geometry_suppression_rate": geometry_suppression_rate,
         },
         "gates": gates,
         "cells": cells,

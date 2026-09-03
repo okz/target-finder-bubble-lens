@@ -28,10 +28,11 @@ from target_finder_toolkit.lens_core import (
     Rect,
     TargetRect,
     bubble_solution,
+    choose_candidate_crop,
     choose_lens_rect,
-    choose_source_crop,
     filter_and_deduplicate,
     intersection_over_union,
+    point_in_interaction_region,
     transform_target_to_lens,
 )
 AMBER = QtGui.QColor(255, 176, 32, 235)
@@ -332,6 +333,8 @@ class FrozenLens:
     candidates: tuple[TargetRect, ...]
     placement: LensPlacement
     source_crop: Rect
+    effective_scale: float
+    opened_at_ms: float
 
 
 def _contains(rect: Rect, point: Point) -> bool:
@@ -355,6 +358,30 @@ def _frame_image(frame: np.ndarray) -> QtGui.QImage:
         QtGui.QImage.Format.Format_BGR888,
     )
     return image.copy()
+
+
+def source_change_fraction(
+    frozen_frame: np.ndarray,
+    current_frame: np.ndarray,
+    region: Rect,
+    screen: Rect,
+    pixel_threshold: float,
+) -> float:
+    """Fraction of logical source pixels whose mean BGR difference crosses a threshold."""
+
+    if frozen_frame.shape != current_frame.shape:
+        return 1.0
+    height, width = frozen_frame.shape[:2]
+    left = max(0, int(math.floor(region.x - screen.x)))
+    top = max(0, int(math.floor(region.y - screen.y)))
+    right = min(width, int(math.ceil(region.right - screen.x)))
+    bottom = min(height, int(math.ceil(region.bottom - screen.y)))
+    if left >= right or top >= bottom:
+        return 1.0
+    frozen = frozen_frame[top:bottom, left:right].astype(np.int16)
+    current = current_frame[top:bottom, left:right].astype(np.int16)
+    mean_difference = np.abs(current - frozen).mean(axis=2)
+    return float(np.count_nonzero(mean_difference >= pixel_threshold) / mean_difference.size)
 
 
 class LensOverlay(QtWidgets.QWidget):
@@ -390,8 +417,14 @@ class LensOverlay(QtWidgets.QWidget):
         self._last_sample: PointerSample | None = None
         self._last_step: LensStep | None = None
         self._frozen: FrozenLens | None = None
+        self._pending_placement: LensPlacement | None = None
         self._selected_target: TargetRect | None = None
         self._close_requested = False
+        self._close_reason: str | None = None
+        self._selection_requested = False
+        self._scroll_requested = False
+        self._last_source_change_fraction: float | None = None
+        self._last_suppression_details: dict | None = None
         self._last_tracking_valid: bool | None = None
 
         if screen_rect is None:
@@ -440,6 +473,11 @@ class LensOverlay(QtWidgets.QWidget):
     @QtCore.pyqtSlot()
     def request_close(self) -> None:
         self._close_requested = True
+        self._close_reason = "lens_closed"
+
+    @QtCore.pyqtSlot()
+    def request_scroll_close(self) -> None:
+        self._scroll_requested = True
 
     @QtCore.pyqtSlot()
     def confirm_selection(self) -> None:
@@ -454,7 +492,7 @@ class LensOverlay(QtWidgets.QWidget):
                 "snapshot_generation": self._frozen.generation,
             }
         )
-        self._close_requested = True
+        self._selection_requested = True
 
     def _log_step(self, step: LensStep, sample: PointerSample) -> None:
         if not step.events:
@@ -502,9 +540,13 @@ class LensOverlay(QtWidgets.QWidget):
                 payload["lens"] = {
                     "rect": asdict(self._frozen.placement.rect),
                     "source_crop": asdict(self._frozen.source_crop),
-                    "scale": self.config.lens_scale,
+                    "scale": self._frozen.effective_scale,
                     "placement": self._frozen.placement.side,
                 }
+            if event == "source_changed":
+                payload["source_change_fraction"] = self._last_source_change_fraction
+            if event.startswith("lens_suppressed_"):
+                payload["suppression"] = self._last_suppression_details
             self.logger.write(payload)
 
     def _log_tracking_transition(self, sample: PointerSample) -> None:
@@ -520,9 +562,10 @@ class LensOverlay(QtWidgets.QWidget):
             }
         )
 
-    def _freeze_lens(self, step: LensStep) -> None:
+    def _freeze_lens(self, step: LensStep, sample: PointerSample) -> str | None:
+        self._last_suppression_details = None
         if self._snapshot.frame is None or step.decision.center is None:
-            return
+            return "lens_suppressed_no_clean_frame"
         candidate_ids = set(step.frozen_candidate_ids)
         candidates = tuple(
             target
@@ -530,22 +573,50 @@ class LensOverlay(QtWidgets.QWidget):
             if target.id in candidate_ids
         )
         if len(candidates) < 2:
-            self._close_requested = True
-            return
-        placement = choose_lens_rect(candidates, self.screen_rect, self.config)
-        source_crop = choose_source_crop(
-            step.decision.center,
+            return "target_invalidated"
+        placement_result = choose_lens_rect(candidates, self.screen_rect, self.config)
+        if placement_result.placement is None:
+            self._last_suppression_details = {"reason": placement_result.reason}
+            return placement_result.reason
+        placement = placement_result.placement
+        crop_result = choose_candidate_crop(
+            candidates,
             placement.rect,
             self.screen_rect,
-            self.config.lens_scale,
+            self.config,
         )
+        if crop_result.crop is None:
+            self._last_suppression_details = {
+                "reason": crop_result.reason,
+                "required_hull": asdict(crop_result.required_hull),
+                "effective_scale": crop_result.effective_scale,
+                "minimum_scale": self.config.minimum_lens_scale,
+            }
+            return crop_result.reason
         self._frozen = FrozenLens(
             generation=self._snapshot.generation,
             frame=self._snapshot.frame.copy(),
             candidates=candidates,
             placement=placement,
-            source_crop=source_crop,
+            source_crop=crop_result.crop,
+            effective_scale=crop_result.effective_scale,
+            opened_at_ms=sample.t_ms,
         )
+        return None
+
+    def _update_pending_preview(self, step: LensStep) -> None:
+        candidate_ids = set(step.frozen_candidate_ids)
+        candidates = tuple(
+            target
+            for target in filter_and_deduplicate(self._snapshot.targets, self.config)
+            if target.id in candidate_ids
+        )
+        if len(candidates) < 2:
+            self._pending_placement = None
+            return
+        self._pending_placement = choose_lens_rect(
+            candidates, self.screen_rect, self.config
+        ).placement
 
     def _update_lens_selection(self, sample: PointerSample) -> None:
         self._selected_target = None
@@ -581,6 +652,17 @@ class LensOverlay(QtWidgets.QWidget):
                 return False
         return True
 
+    def _source_change_fraction(self) -> float:
+        if self._frozen is None or self._snapshot.frame is None:
+            return 1.0
+        return source_change_fraction(
+            self._frozen.frame,
+            self._snapshot.frame,
+            self._frozen.source_crop,
+            self.screen_rect,
+            self.config.source_change_pixel_threshold,
+        )
+
     @QtCore.pyqtSlot()
     def tick(self) -> None:
         sample = self.pointer_provider.get_sample()
@@ -590,8 +672,31 @@ class LensOverlay(QtWidgets.QWidget):
         self._last_sample = sample
         self._log_tracking_transition(sample)
         close_reason = None
-        if self.machine.state is LensStateName.LENS_OPEN and not self._frozen_candidates_are_valid():
-            close_reason = "target_invalidated"
+        active_states = {
+            LensStateName.LENS_OPEN,
+            LensStateName.EXIT_GRACE,
+            LensStateName.FEEDBACK,
+        }
+        if self.machine.state in active_states:
+            if self._scroll_requested:
+                close_reason = "source_scrolled"
+            elif not self._frozen_candidates_are_valid():
+                close_reason = "target_invalidated"
+            elif self._frozen is not None and self._snapshot.generation != self._frozen.generation:
+                self._last_source_change_fraction = self._source_change_fraction()
+                if (
+                    self._last_source_change_fraction
+                    >= self.config.source_change_fraction_threshold
+                ):
+                    close_reason = "source_changed"
+        pointer_in_region = True
+        if self._frozen is not None and sample.valid:
+            pointer_in_region = point_in_interaction_region(
+                sample.point,
+                self._frozen.placement.source_hull,
+                self._frozen.placement.rect,
+                self.config,
+            )
         trigger_targets = () if self.interaction_mode == "bubble" else self._snapshot.targets
         step = self.machine.step(
             sample.t_ms,
@@ -599,14 +704,30 @@ class LensOverlay(QtWidgets.QWidget):
             trigger_targets,
             clean_frame_available=self._snapshot.frame is not None,
             close_requested=self._close_requested,
-            close_reason=close_reason,
+            close_reason=close_reason or self._close_reason,
+            pointer_in_interaction_region=pointer_in_region,
+            selection_requested=self._selection_requested,
         )
         self._close_requested = False
+        self._close_reason = None
+        self._selection_requested = False
+        self._scroll_requested = False
         if "lens_opened" in step.events:
-            self._freeze_lens(step)
-        if step.state is LensStateName.LENS_OPEN:
+            suppression_reason = self._freeze_lens(step, sample)
+            if suppression_reason is not None:
+                step = self.machine.step(
+                    sample.t_ms,
+                    sample,
+                    (),
+                    close_reason=suppression_reason,
+                )
+        if step.state is LensStateName.PENDING:
+            self._update_pending_preview(step)
+        else:
+            self._pending_placement = None
+        if step.state in (LensStateName.LENS_OPEN, LensStateName.EXIT_GRACE):
             self._update_lens_selection(sample)
-        elif step.state is not LensStateName.LENS_OPEN:
+        elif step.state not in active_states:
             self._frozen = None
             self._selected_target = None
         self._last_step = step
@@ -641,6 +762,20 @@ class LensOverlay(QtWidgets.QWidget):
         )
         self._draw_cursor(painter, point, WHITE)
 
+        if self._last_step and self._last_step.state is LensStateName.PENDING:
+            decision = self._last_step.decision
+            plausible = (
+                () if decision.target_solution is None else decision.target_solution.plausible
+            )
+            if plausible:
+                source = choose_lens_rect(plausible, self.screen_rect, self.config)
+                if source.placement is not None:
+                    painter.setPen(QtGui.QPen(QtGui.QColor(255, 176, 32, 90), 2))
+                    painter.drawRoundedRect(_qrect(source.placement.source_hull), 8, 8)
+            if self._pending_placement is not None:
+                painter.setPen(QtGui.QPen(QtGui.QColor(255, 176, 32, 80), 2))
+                painter.drawRoundedRect(_qrect(self._pending_placement.rect), 12, 12)
+
     def _draw_lens(self, painter: QtGui.QPainter) -> None:
         if self._frozen is None:
             return
@@ -655,6 +790,13 @@ class LensOverlay(QtWidgets.QWidget):
             QtCore.QPointF(lens_rect.center.x, lens_rect.center.y),
         )
 
+        painter.save()
+        if self._last_sample is not None and self.config.fade_in_ms > 0:
+            fade = min(
+                1.0,
+                max(0.0, (self._last_sample.t_ms - frozen.opened_at_ms) / self.config.fade_in_ms),
+            )
+            painter.setOpacity(fade)
         painter.fillRect(_qrect(lens_rect), DARK)
         painter.drawImage(_qrect(lens_rect), _frame_image(frozen.frame), _qrect(frozen.source_crop))
         painter.save()
@@ -681,10 +823,16 @@ class LensOverlay(QtWidgets.QWidget):
         painter.setPen(QtGui.QPen(AMBER, 4))
         painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
         painter.drawRoundedRect(_qrect(lens_rect), 12, 12)
-        label_rect = QtCore.QRectF(lens_rect.x, lens_rect.y - 28, lens_rect.width, 24)
+        label_rect = QtCore.QRectF(lens_rect.x + 8, lens_rect.y + 8, lens_rect.width - 16, 24)
         painter.fillRect(label_rect, DARK)
         painter.setPen(WHITE)
-        painter.drawText(label_rect, QtCore.Qt.AlignmentFlag.AlignCenter, "DRY RUN  •  look into lens  •  Enter confirms")
+        label = (
+            "DRY RUN  •  selected"
+            if self._last_step and self._last_step.state is LensStateName.FEEDBACK
+            else "DRY RUN  •  look into lens  •  Enter confirms"
+        )
+        painter.drawText(label_rect, QtCore.Qt.AlignmentFlag.AlignCenter, label)
+        painter.restore()
 
     def _draw_tracking_status(self, painter: QtGui.QPainter) -> None:
         valid = self._last_sample is not None and self._last_sample.valid
@@ -705,7 +853,11 @@ class LensOverlay(QtWidgets.QWidget):
 
     def _paint(self, painter: QtGui.QPainter) -> None:
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
-        if self._last_step is not None and self._last_step.state is LensStateName.LENS_OPEN:
+        if self._last_step is not None and self._last_step.state in {
+            LensStateName.LENS_OPEN,
+            LensStateName.EXIT_GRACE,
+            LensStateName.FEEDBACK,
+        }:
             self._draw_lens(painter)
         else:
             self._draw_bubble(painter)
@@ -731,12 +883,13 @@ class LensOverlay(QtWidgets.QWidget):
 
 class LiveKeyboardController:
     def __init__(self, overlay: LensOverlay, stop_callback: Callable[[], None]) -> None:
-        from pynput import keyboard
+        from pynput import keyboard, mouse
 
         self._keyboard = keyboard
         self._overlay = overlay
         self._stop_callback = stop_callback
         self._listener = keyboard.Listener(on_press=self._on_press)
+        self._scroll_listener = mouse.Listener(on_scroll=self._on_scroll)
 
     def _on_press(self, key) -> None:
         if key == self._keyboard.Key.esc:
@@ -754,11 +907,20 @@ class LiveKeyboardController:
             except AttributeError:
                 pass
 
+    def _on_scroll(self, _x, _y, _dx, _dy) -> None:
+        QtCore.QMetaObject.invokeMethod(
+            self._overlay,
+            "request_scroll_close",
+            QtCore.Qt.ConnectionType.QueuedConnection,
+        )
+
     def start(self) -> None:
         self._listener.start()
+        self._scroll_listener.start()
 
     def stop(self) -> None:
         self._listener.stop()
+        self._scroll_listener.stop()
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -780,7 +942,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--lens-size-px", type=float, default=360)
     parser.add_argument("--lens-scale", type=float, default=3.0)
     parser.add_argument("--lens-gap-px", type=float, default=24)
-    parser.add_argument("--lens-timeout-ms", type=float, default=3000)
+    parser.add_argument("--transfer-protection-ms", type=float, default=600)
+    parser.add_argument("--outside-grace-ms", type=float, default=1200)
+    parser.add_argument("--feedback-ms", type=float, default=200)
+    parser.add_argument("--crop-margin-px", type=float, default=20)
+    parser.add_argument("--minimum-lens-scale", type=float, default=2.0)
     parser.add_argument("--cooldown-ms", type=float, default=400)
     parser.add_argument("--include-text-targets", action="store_true")
     parser.add_argument(
@@ -826,7 +992,11 @@ def main() -> None:
         lens_size_px=args.lens_size_px,
         lens_scale=args.lens_scale,
         lens_gap_px=args.lens_gap_px,
-        lens_timeout_ms=args.lens_timeout_ms,
+        initial_transfer_protection_ms=args.transfer_protection_ms,
+        outside_grace_ms=args.outside_grace_ms,
+        selection_feedback_ms=args.feedback_ms,
+        crop_margin_px=args.crop_margin_px,
+        minimum_lens_scale=args.minimum_lens_scale,
         cooldown_ms=args.cooldown_ms,
         confidence_threshold=args.confidence,
         include_text_targets=args.include_text_targets,

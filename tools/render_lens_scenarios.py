@@ -48,10 +48,10 @@ def render_presets() -> tuple[dict, ...]:
         {"name": "center_1920x1080_two", "screen": (1920, 1080), "targets": _targets(2, 860, 510, 24, 8)},
         {"name": "left_1366x768_three", "screen": (1366, 768), "targets": _targets(3, 20, 350, 24, 7)},
         {"name": "right_1366x768_three", "screen": (1366, 768), "targets": _targets(3, 1260, 350, 24, 7)},
-        {"name": "top_1920x1080_six", "screen": (1920, 1080), "targets": _targets(6, 820, 18, 20, 6)},
-        {"name": "bottom_1920x1080_six", "screen": (1920, 1080), "targets": _targets(6, 820, 1040, 20, 6)},
+        {"name": "top_1920x1080_six", "screen": (1920, 1080), "targets": _targets(6, 820, 18, 20, 2)},
+        {"name": "bottom_1920x1080_six", "screen": (1920, 1080), "targets": _targets(6, 820, 1040, 20, 2)},
         {"name": "top_right_1280x720_two", "screen": (1280, 720), "targets": _targets(2, 1190, 24, 26, 8)},
-        {"name": "fallback_700x500_large", "screen": (700, 500), "targets": _targets(2, 280, 220, 60, 10)},
+        {"name": "fallback_700x500_large", "screen": (700, 500), "targets": _targets(2, 280, 80, 38, 32)},
         {"name": "logical_1280x720_dpr_1_5", "screen": (1280, 720), "targets": _targets(3, 530, 330, 22, 7)},
     )
 
@@ -107,7 +107,7 @@ def _render_one(preset: dict, output_dir: Path) -> dict:
     frozen = overlay.frozen_lens
     destination = source_to_lens(first.center, frozen.source_crop, frozen.placement.rect)
     overlay.pointer_provider = ReplayPointerProvider(
-        [PointerSample(220, destination.x, destination.y)]
+        [PointerSample(300, destination.x, destination.y)]
     )
     overlay.tick()
 
@@ -122,9 +122,7 @@ def _render_one(preset: dict, output_dir: Path) -> dict:
     overlap = rect_intersection_area(frozen.placement.rect, frozen.placement.source_hull)
     result = {
         "name": preset["name"],
-        "passed": overlay.selected_target_id == first.id and (
-            overlap == 0 or frozen.placement.side.startswith("fallback_")
-        ),
+        "passed": overlay.selected_target_id == first.id and overlap == 0,
         "screen": [width, height],
         "placement": frozen.placement.side,
         "lens_rect": [
@@ -134,6 +132,7 @@ def _render_one(preset: dict, output_dir: Path) -> dict:
             frozen.placement.rect.height,
         ],
         "source_hull_overlap_px2": overlap,
+        "effective_scale": frozen.effective_scale,
         "selected_id": overlay.selected_target_id,
         "expected_selected_id": first.id,
         "image": str(output_path),

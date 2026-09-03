@@ -98,14 +98,23 @@ class LensConfig:
     uncertainty_radius_px: float = 48.0
     ambiguity_threshold: float = 0.51
     pending_cue_ms: float = 120.0
-    lens_timeout_ms: float = 3000.0
+    initial_transfer_protection_ms: float = 600.0
+    outside_grace_ms: float = 1200.0
+    selection_feedback_ms: float = 200.0
+    fade_in_ms: float = 100.0
+    test_watchdog_ms: float | None = None
     pointer_loss_timeout_ms: float = 500.0
     cooldown_ms: float = 400.0
     lens_size_px: float = 360.0
     lens_scale: float = 3.0
     lens_gap_px: float = 24.0
     source_hull_padding_px: float = 12.0
-    fallback_lens_sizes_px: tuple[float, ...] = (320.0, 300.0, 280.0)
+    interaction_padding_px: float = 24.0
+    corridor_radius_px: float = 24.0
+    crop_margin_px: float = 20.0
+    minimum_lens_scale: float = 2.0
+    source_change_pixel_threshold: float = 20.0
+    source_change_fraction_threshold: float = 0.20
     confidence_threshold: float = 0.40
     duplicate_iou_threshold: float = 0.85
     duplicate_center_distance_px: float = 5.0
@@ -134,8 +143,28 @@ class LensConfig:
             raise ValueError("Lens size and scale must be positive")
         if self.lens_gap_px < 0 or self.source_hull_padding_px < 0:
             raise ValueError("Lens gap and source padding cannot be negative")
-        if any(size <= 0 for size in self.fallback_lens_sizes_px):
-            raise ValueError("Fallback lens sizes must be positive")
+        timings = (
+            self.initial_transfer_protection_ms,
+            self.outside_grace_ms,
+            self.selection_feedback_ms,
+            self.fade_in_ms,
+            self.pointer_loss_timeout_ms,
+            self.cooldown_ms,
+        )
+        if any(value < 0 for value in timings):
+            raise ValueError("Lens lifecycle timings cannot be negative")
+        if self.test_watchdog_ms is not None and self.test_watchdog_ms <= 0:
+            raise ValueError("Test watchdog must be positive when configured")
+        if self.interaction_padding_px < 0 or self.corridor_radius_px < 0:
+            raise ValueError("Interaction padding and corridor radius cannot be negative")
+        if self.crop_margin_px < 0:
+            raise ValueError("Crop margin cannot be negative")
+        if not 0 < self.minimum_lens_scale <= self.lens_scale:
+            raise ValueError("Minimum lens scale must be positive and no greater than preferred scale")
+        if self.source_change_pixel_threshold < 0:
+            raise ValueError("Source change pixel threshold cannot be negative")
+        if not 0 <= self.source_change_fraction_threshold <= 1:
+            raise ValueError("Source change fraction threshold must be between 0 and 1")
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,10 +211,26 @@ class LensPlacement:
     used_fallback: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class LensPlacementResult:
+    placement: LensPlacement | None
+    reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class LensCropResult:
+    crop: Rect | None
+    effective_scale: float
+    required_hull: Rect
+    reason: str | None = None
+
+
 class LensStateName(str, Enum):
     NORMAL = "NORMAL"
     PENDING = "PENDING"
     LENS_OPEN = "LENS_OPEN"
+    EXIT_GRACE = "EXIT_GRACE"
+    FEEDBACK = "FEEDBACK"
     COOLDOWN = "COOLDOWN"
 
 
@@ -197,6 +242,8 @@ class LensStep:
     ambiguous_for_ms: float = 0.0
     frozen_candidate_ids: tuple[int, ...] = ()
     cooldown_until_ms: float | None = None
+    outside_until_ms: float | None = None
+    feedback_until_ms: float | None = None
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -255,14 +302,12 @@ def choose_lens_rect(
     candidates: Iterable[TargetRect],
     screen: Rect,
     config: LensConfig = LensConfig(),
-) -> LensPlacement:
+) -> LensPlacementResult:
     """Choose a deterministic, fixed sidecar placement for a candidate cluster."""
 
     source_hull = union_rect(candidates, config.source_hull_padding_px)
-    sizes = (config.lens_size_px,) + tuple(config.fallback_lens_sizes_px)
-    for size in sizes:
-        if size > screen.width or size > screen.height:
-            continue
+    size = config.lens_size_px
+    if size <= screen.width and size <= screen.height:
         positions = (
             (
                 "right",
@@ -314,21 +359,111 @@ def choose_lens_rect(
                 and rect.bottom <= screen.bottom
             )
             if entirely_on_screen and rect_intersection_area(rect, source_hull) == 0.0:
-                return LensPlacement(rect, source_hull, side, size != config.lens_size_px)
+                return LensPlacementResult(LensPlacement(rect, source_hull, side, False))
 
-    size = min(sizes[-1], screen.width, screen.height)
-    corners = (
-        ("fallback_top_right", screen.right - size, screen.y),
-        ("fallback_top_left", screen.x, screen.y),
-        ("fallback_bottom_right", screen.right - size, screen.bottom - size),
-        ("fallback_bottom_left", screen.x, screen.bottom - size),
+        dock = Rect(
+            _clamp_rect_axis(
+                screen.center.x - size / 2.0,
+                size,
+                screen.x,
+                screen.right,
+            ),
+            screen.bottom - size,
+            size,
+            size,
+        )
+        if rect_intersection_area(dock, source_hull) == 0.0:
+            return LensPlacementResult(
+                LensPlacement(dock, source_hull, "fallback_bottom_center", True)
+            )
+    return LensPlacementResult(None, "lens_suppressed_no_safe_placement")
+
+
+def choose_candidate_crop(
+    candidates: Iterable[TargetRect],
+    lens_rect: Rect,
+    screen: Rect,
+    config: LensConfig = LensConfig(),
+) -> LensCropResult:
+    """Fit a square crop around every candidate at a useful magnification."""
+
+    padded = union_rect(candidates, config.crop_margin_px)
+    required_left = max(screen.x, padded.x)
+    required_top = max(screen.y, padded.y)
+    required_right = min(screen.right, padded.right)
+    required_bottom = min(screen.bottom, padded.bottom)
+    if required_left >= required_right or required_top >= required_bottom:
+        return LensCropResult(None, 0.0, padded, "lens_suppressed_cluster_too_large")
+    required = Rect(
+        required_left,
+        required_top,
+        required_right - required_left,
+        required_bottom - required_top,
     )
-    choices = [
-        (rect_intersection_area(Rect(x, y, size, size), source_hull), index, side, x, y)
-        for index, (side, x, y) in enumerate(corners)
-    ]
-    _, _, side, x, y = min(choices)
-    return LensPlacement(Rect(x, y, size, size), source_hull, side, True)
+    minimum_side = max(required.width, required.height)
+    preferred_side = lens_rect.width / config.lens_scale
+    side = max(minimum_side, preferred_side)
+    if side > screen.width or side > screen.height:
+        return LensCropResult(None, 0.0, required, "lens_suppressed_cluster_too_large")
+    x = _clamp_rect_axis(required.center.x - side / 2.0, side, screen.x, screen.right)
+    y = _clamp_rect_axis(required.center.y - side / 2.0, side, screen.y, screen.bottom)
+    crop = Rect(x, y, side, side)
+    effective_scale = min(
+        config.lens_scale,
+        lens_rect.width / crop.width,
+        lens_rect.height / crop.height,
+    )
+    if effective_scale < config.minimum_lens_scale:
+        return LensCropResult(
+            None,
+            effective_scale,
+            required,
+            "lens_suppressed_cluster_too_large",
+        )
+    return LensCropResult(crop, effective_scale, required)
+
+
+def expand_rect(rect: Rect, padding: float) -> Rect:
+    if padding < 0:
+        raise ValueError("Padding cannot be negative")
+    return Rect(
+        rect.x - padding,
+        rect.y - padding,
+        rect.width + 2 * padding,
+        rect.height + 2 * padding,
+    )
+
+
+def point_segment_distance(point: Point, start: Point, end: Point) -> float:
+    dx = end.x - start.x
+    dy = end.y - start.y
+    length_squared = dx * dx + dy * dy
+    if length_squared == 0:
+        return hypot(point.x - start.x, point.y - start.y)
+    projection = _clamp(
+        ((point.x - start.x) * dx + (point.y - start.y) * dy) / length_squared,
+        0.0,
+        1.0,
+    )
+    nearest = Point(start.x + projection * dx, start.y + projection * dy)
+    return hypot(point.x - nearest.x, point.y - nearest.y)
+
+
+def point_in_interaction_region(
+    point: Point,
+    source_hull: Rect,
+    lens_rect: Rect,
+    config: LensConfig = LensConfig(),
+) -> bool:
+    source = expand_rect(source_hull, config.interaction_padding_px)
+    lens = expand_rect(lens_rect, config.interaction_padding_px)
+    in_source = source.x <= point.x <= source.right and source.y <= point.y <= source.bottom
+    in_lens = lens.x <= point.x <= lens.right and lens.y <= point.y <= lens.bottom
+    in_corridor = (
+        point_segment_distance(point, source_hull.center, lens_rect.center)
+        <= config.corridor_radius_px
+    )
+    return in_source or in_lens or in_corridor
 
 
 def choose_source_crop(center: Point, lens_rect: Rect, screen: Rect, scale: float) -> Rect:
@@ -586,6 +721,8 @@ class LensStateMachine:
     _last_nonambiguous_ms: float | None = field(default=None, init=False)
     _opened_at_ms: float | None = field(default=None, init=False)
     _last_valid_ms: float | None = field(default=None, init=False)
+    _outside_since_ms: float | None = field(default=None, init=False)
+    _feedback_until_ms: float | None = field(default=None, init=False)
     _cooldown_until_ms: float | None = field(default=None, init=False)
     _frozen_candidate_ids: tuple[int, ...] = field(default=(), init=False)
 
@@ -596,6 +733,8 @@ class LensStateMachine:
         self.state = LensStateName.COOLDOWN
         self._cooldown_until_ms = now_ms + self.config.cooldown_ms
         self._opened_at_ms = None
+        self._outside_since_ms = None
+        self._feedback_until_ms = None
         self._ambiguous_since_ms = None
         self._last_nonambiguous_ms = None
         self._samples.clear()
@@ -618,24 +757,88 @@ class LensStateMachine:
         clean_frame_available: bool = True,
         close_requested: bool = False,
         close_reason: str | None = None,
+        pointer_in_interaction_region: bool = True,
+        selection_requested: bool = False,
     ) -> LensStep:
         if sample.t_ms != now_ms:
             raise ValueError("sample.t_ms must equal now_ms for deterministic stepping")
 
-        if self.state is LensStateName.LENS_OPEN:
-            if sample.valid:
-                self._last_valid_ms = now_ms
+        if self.state is LensStateName.FEEDBACK:
             if close_requested or close_reason is not None:
                 return self._start_cooldown(now_ms, close_reason or "lens_closed")
-            if self._opened_at_ms is not None and now_ms - self._opened_at_ms >= self.config.lens_timeout_ms:
-                return self._start_cooldown(now_ms, "lens_timed_out")
-            if self._last_valid_ms is not None and now_ms - self._last_valid_ms >= self.config.pointer_loss_timeout_ms:
-                return self._start_cooldown(now_ms, "pointer_lost")
+            if self._feedback_until_ms is not None and now_ms >= self._feedback_until_ms:
+                return self._start_cooldown(now_ms, "selection_feedback_finished")
             return LensStep(
                 self.state,
                 (),
                 self._empty_decision(),
                 frozen_candidate_ids=self._frozen_candidate_ids,
+                feedback_until_ms=self._feedback_until_ms,
+            )
+
+        if self.state in (LensStateName.LENS_OPEN, LensStateName.EXIT_GRACE):
+            if sample.valid:
+                self._last_valid_ms = now_ms
+            if close_requested or close_reason is not None:
+                return self._start_cooldown(now_ms, close_reason or "lens_closed")
+            if selection_requested:
+                self.state = LensStateName.FEEDBACK
+                self._feedback_until_ms = now_ms + self.config.selection_feedback_ms
+                self._outside_since_ms = None
+                return LensStep(
+                    self.state,
+                    ("selection_feedback_started",),
+                    self._empty_decision(),
+                    frozen_candidate_ids=self._frozen_candidate_ids,
+                    feedback_until_ms=self._feedback_until_ms,
+                )
+            if (
+                self.config.test_watchdog_ms is not None
+                and self._opened_at_ms is not None
+                and now_ms - self._opened_at_ms >= self.config.test_watchdog_ms
+            ):
+                return self._start_cooldown(now_ms, "test_watchdog")
+            if self._last_valid_ms is not None and now_ms - self._last_valid_ms >= self.config.pointer_loss_timeout_ms:
+                return self._start_cooldown(now_ms, "pointer_lost")
+
+            protected = (
+                self._opened_at_ms is not None
+                and now_ms - self._opened_at_ms < self.config.initial_transfer_protection_ms
+            )
+            if sample.valid and not protected:
+                if pointer_in_interaction_region:
+                    if self.state is LensStateName.EXIT_GRACE:
+                        self.state = LensStateName.LENS_OPEN
+                        self._outside_since_ms = None
+                        return LensStep(
+                            self.state,
+                            ("exit_grace_cancelled",),
+                            self._empty_decision(),
+                            frozen_candidate_ids=self._frozen_candidate_ids,
+                        )
+                else:
+                    if self._outside_since_ms is None:
+                        self._outside_since_ms = now_ms
+                        self.state = LensStateName.EXIT_GRACE
+                        return LensStep(
+                            self.state,
+                            ("exit_grace_started",),
+                            self._empty_decision(),
+                            frozen_candidate_ids=self._frozen_candidate_ids,
+                            outside_until_ms=now_ms + self.config.outside_grace_ms,
+                        )
+                    if now_ms - self._outside_since_ms >= self.config.outside_grace_ms:
+                        return self._start_cooldown(now_ms, "outside_region")
+            return LensStep(
+                self.state,
+                (),
+                self._empty_decision(),
+                frozen_candidate_ids=self._frozen_candidate_ids,
+                outside_until_ms=(
+                    None
+                    if self._outside_since_ms is None
+                    else self._outside_since_ms + self.config.outside_grace_ms
+                ),
             )
 
         if self.state is LensStateName.COOLDOWN:
@@ -679,10 +882,22 @@ class LensStateMachine:
         ambiguous_for = now_ms - self._ambiguous_since_ms
         candidate_ids = tuple(target.id for target in decision.target_solution.plausible)
 
-        if ambiguous_for >= self.config.trigger_window_ms and clean_frame_available:
+        if ambiguous_for >= self.config.trigger_window_ms:
+            if not clean_frame_available:
+                self.state = LensStateName.NORMAL
+                self._ambiguous_since_ms = now_ms
+                return LensStep(
+                    self.state,
+                    cooldown_events + ("lens_suppressed_no_clean_frame",),
+                    decision,
+                    ambiguous_for,
+                    candidate_ids,
+                )
             self.state = LensStateName.LENS_OPEN
             self._opened_at_ms = now_ms
             self._last_valid_ms = now_ms
+            self._outside_since_ms = None
+            self._feedback_until_ms = None
             self._frozen_candidate_ids = candidate_ids
             return LensStep(
                 self.state,
@@ -706,7 +921,9 @@ __all__ = [
     "AmbiguitySolution",
     "BubbleSolution",
     "LensConfig",
+    "LensCropResult",
     "LensPlacement",
+    "LensPlacementResult",
     "LensStateMachine",
     "LensStateName",
     "LensStep",
@@ -719,13 +936,17 @@ __all__ = [
     "ambiguity_solution",
     "bubble_solution",
     "choose_lens_rect",
+    "choose_candidate_crop",
     "choose_source_crop",
     "containment_distance",
     "evaluate_window",
     "filter_and_deduplicate",
+    "expand_rect",
     "intersection_over_union",
     "lens_to_source",
     "point_rect_distance",
+    "point_in_interaction_region",
+    "point_segment_distance",
     "rect_intersection_area",
     "source_to_lens",
     "transform_target_to_lens",

@@ -1,4 +1,5 @@
 from target_finder_toolkit.lens_core import (
+    LensConfig,
     LensStateMachine,
     LensStateName,
     PointerSample,
@@ -72,8 +73,9 @@ def test_missing_clean_frame_blocks_opening():
         for t in range(0, 241, 20)
     ]
 
-    assert steps[-1].state is LensStateName.PENDING
+    assert steps[-1].state is LensStateName.NORMAL
     assert not any("lens_opened" in step.events for step in steps)
+    assert any("lens_suppressed_no_clean_frame" in step.events for step in steps)
 
 
 def test_closing_starts_cooldown_and_prevents_immediate_reopen():
@@ -94,12 +96,67 @@ def test_closing_starts_cooldown_and_prevents_immediate_reopen():
     assert "lens_opened" not in expired.events
 
 
-def test_timeout_enters_cooldown():
+def test_lens_has_no_human_timeout():
     machine = LensStateMachine()
     for t in range(0, 201, 20):
         _step(machine, t)
 
-    timed_out = _step(machine, 3200)
+    still_open = _step(machine, 20_000)
 
-    assert timed_out.state is LensStateName.COOLDOWN
-    assert timed_out.events == ("lens_timed_out", "cooldown_started")
+    assert still_open.state is LensStateName.LENS_OPEN
+
+
+def test_outside_grace_starts_after_transfer_protection_and_reentry_cancels_it():
+    machine = LensStateMachine()
+    for t in range(0, 201, 20):
+        _step(machine, t)
+
+    protected = _step(machine, 700, pointer_in_interaction_region=False)
+    grace = _step(machine, 800, pointer_in_interaction_region=False)
+    reentered = _step(machine, 1700, pointer_in_interaction_region=True)
+
+    assert protected.state is LensStateName.LENS_OPEN
+    assert grace.state is LensStateName.EXIT_GRACE
+    assert grace.events == ("exit_grace_started",)
+    assert reentered.state is LensStateName.LENS_OPEN
+    assert reentered.events == ("exit_grace_cancelled",)
+
+
+def test_remaining_outside_for_more_than_grace_closes_lens():
+    machine = LensStateMachine()
+    for t in range(0, 201, 20):
+        _step(machine, t)
+
+    _step(machine, 800, pointer_in_interaction_region=False)
+    still_in_grace = _step(machine, 1700, pointer_in_interaction_region=False)
+    closed = _step(machine, 2100, pointer_in_interaction_region=False)
+
+    assert still_in_grace.state is LensStateName.EXIT_GRACE
+    assert closed.state is LensStateName.COOLDOWN
+    assert closed.events == ("outside_region", "cooldown_started")
+
+
+def test_selection_feedback_is_visible_before_cooldown():
+    machine = LensStateMachine()
+    for t in range(0, 201, 20):
+        _step(machine, t)
+
+    feedback = _step(machine, 220, selection_requested=True)
+    active = _step(machine, 400)
+    finished = _step(machine, 420)
+
+    assert feedback.state is LensStateName.FEEDBACK
+    assert feedback.feedback_until_ms == 420
+    assert active.state is LensStateName.FEEDBACK
+    assert finished.state is LensStateName.COOLDOWN
+
+
+def test_optional_watchdog_is_test_only_and_closes_when_configured():
+    machine = LensStateMachine(LensConfig(test_watchdog_ms=15_000))
+    for t in range(0, 201, 20):
+        _step(machine, t)
+
+    closed = _step(machine, 15_200)
+
+    assert closed.state is LensStateName.COOLDOWN
+    assert closed.events == ("test_watchdog", "cooldown_started")
