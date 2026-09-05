@@ -1,7 +1,7 @@
 # Synthetic selection-ambiguity evaluation
 
-Updated on 5 September 2026 to count runtime display availability as well as
-trigger attempts. Known or user-compensated offsets and unknown calibration
+Updated on 5 September 2026 to count runtime display availability and evaluate
+rectangular layouts. Known or user-compensated offsets and unknown calibration
 failures remain explicitly excluded.
 
 The deterministic matrix contains 120 cells and 12,000 trials across
@@ -58,39 +58,52 @@ successful assistance opportunity requires a displayable lens containing the
 intended target. The screen remains the original 1920×1080 logical-pixel
 synthetic screen; other screen sizes still need evaluation.
 
+The base size remains 360×360 px. Each axis expands only as needed to fit the
+candidate hull and margin at the 2× minimum. The crop matches the resulting
+aspect ratio with a uniform scale up to 3×. Placement order and non-overlap
+constraints are unchanged; the rectangle stays fixed after opening.
+
 | Gate | Result | Pass? |
 |---|---:|:---:|
-| Displayed lens with intended target on ambiguous cells | 72.26% | **No: requires 80%** |
-| Displayed false-open rate on easy cells | 1.36% | Yes |
+| Displayed lens with intended target on ambiguous cells | 80.68% | Yes: requires 80% |
+| Displayed false-open rate on easy cells | 1.39% | Yes |
 | Median display time over displayed ambiguous-cell trials | 240 ms | Yes |
 | Placement success | 100% | Yes |
 | Lens mapping accuracy | 100% | Yes |
-| Full-layout suppression below the 2× minimum | 40% | Informational |
+| Full-layout geometry suppression | 0% | Informational |
 
 There are 19 selection-ambiguous cells and 75 easy cells. Across the full
-12,000-trial matrix there are 2,532 trigger attempts, 2,270 displayable lenses,
-and 262 runtime suppressions. Every displayed lens includes the intended
-target in this matrix. The unchanged recall requirement fails; thresholds have
-not been relaxed. The historical trigger-only recall remains 80.68%, with
-1.39% trigger-only false opens, and is retained as a separate regression metric.
+12,000-trial matrix there are 2,532 trigger attempts, 2,532 displayable lenses,
+and zero runtime suppressions. Every displayed lens includes the intended
+target in this matrix. The unchanged recall requirement passes; trigger
+thresholds have not been changed. The historical trigger-only recall remains
+80.68%, with 1.39% trigger-only false opens, as a separate regression metric.
+
+Under the corrected evaluator, the square baseline had 72.26% displayed recall,
+2,270 displayed lenses and 262 runtime suppressions. Rectangular geometry
+recovers those suppressed trials without changing the trigger.
 
 Mapping accuracy still measures exact transformed target centers only when a
 complete layout fits. It does not measure noisy lens selection or acquisition.
-The 40% full-layout stress suppression is separate from runtime suppression of
-actual plausible candidate sets. For a reproducible dense cell (52 px toolbar,
-8 px gap, sigma 25, seeds 0–99), 82 trigger attempts yield 15 displayable lenses
-and 67 runtime suppressions.
+Full-layout stress suppression is separate from runtime suppression of actual
+plausible candidate sets. It falls from 40% to zero in this matrix. For a
+reproducible dense cell (52 px toolbar, 8 px gap, sigma 25, seeds 0–99), all 82
+trigger attempts now display a lens; the square baseline displayed 15 and
+suppressed 67. Zero suppression here is not a guarantee for arbitrary screens:
+no-safe-placement cases remain explicitly suppressed and tested.
 
 The report explicitly marks acquisition as unevaluated, with null completed
 selection and acquisition-accuracy values. `passed` describes only the listed
 display/geometry gates. CLI execution returns nonzero when a product gate
-fails. The regression suite verifies this known shortfall as correct evaluator
-output; passing software tests must not be reported as passing the product gate.
+fails. The regression suite verifies both successful display and explicit
+suppression for impossible layouts. Passing software tests and a passing
+display-availability gate still do not establish human acquisition performance.
 
 The earlier calibration-contaminated 20.51% result and the first corrected but
 structurally flawed 14.26% result are superseded. Neither should be used for
 product decisions.
 
-Use these results to resolve geometry and measurement gaps before interpreting
-Human Gate B as evidence of improved acquisition. They do not authorize
-operating-system click execution.
+Use these results to prepare acquisition measurements. Directional uncertainty,
+real tracker behavior and dynamic-scene robustness still need attention before
+interpreting Human Gate B as evidence of improved acquisition. These results do
+not authorize operating-system click execution.

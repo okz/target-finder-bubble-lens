@@ -363,7 +363,7 @@ def test_source_change_fraction_uses_per_pixel_mean_bgr_threshold():
     assert fraction == pytest.approx(0.20)
 
 
-def test_opening_is_suppressed_when_candidates_cannot_reach_two_times_scale(qtbot):
+def test_opening_expands_to_rectangle_when_square_cannot_reach_two_times_scale(qtbot):
     targets = (
         TargetRect(id=1, x=350, y=280, width=80, height=80, score=0.95, class_id=0),
         TargetRect(id=2, x=440, y=280, width=80, height=80, score=0.94, class_id=0),
@@ -382,9 +382,18 @@ def test_opening_is_suppressed_when_candidates_cannot_reach_two_times_scale(qtbo
     for _ in trace:
         overlay.tick()
 
-    assert overlay.machine.state is LensStateName.COOLDOWN
-    assert overlay.frozen_lens is None
-    assert "lens_suppressed_cluster_too_large" in overlay._last_step.events
+    assert overlay.machine.state is LensStateName.LENS_OPEN
+    assert overlay.frozen_lens is not None
+    assert overlay.frozen_lens.placement.rect.width == 420
+    assert overlay.frozen_lens.placement.rect.height == 360
+    assert overlay.frozen_lens.effective_scale == 2
+    frozen = overlay.frozen_lens
+    for target in targets:
+        point = source_to_lens(target.center, frozen.source_crop, frozen.placement.rect)
+        overlay.pointer_provider = ReplayPointerProvider([PointerSample(220 + target.id * 20, point.x, point.y)])
+        overlay.tick()
+        assert overlay.selected_target_id == target.id
+    overlay.render_to_image()
 
 
 def test_tracking_loss_closes_an_open_lens(qtbot):

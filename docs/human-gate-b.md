@@ -82,12 +82,11 @@ and the fixation-center offset from the current Bubble winner.
 - At least 80% of lens appearances are followed by gaze entry within 700 ms.
 - Invalid tracking closes an open lens safely.
 
-The corrected synthetic display-availability gate currently fails: 72.26% of
-ambiguous-cell trials display a lens containing the intended target, below the
-unchanged 80% criterion. The older 80.68% result counts trigger attempts before
-runtime geometry suppression. Displayed easy-cell false opens are 1.36%.
+Rectangular layouts pass the corrected synthetic display-availability gate:
+80.68% of ambiguous-cell trials display a lens containing the intended target,
+above the unchanged 80% criterion. The square baseline achieved 72.26% under
+this corrected measurement. Displayed easy-cell false opens are 1.39%.
 Calibration offsets remain excluded; completed acquisition is not simulated.
-Resolve the display shortfall and trial-recording workflow before using this
-comparison for a product decision. Exploratory dry-run observations may inform
-that design work. Gate B does not enable clicks; make an explicit go, pivot, or
-stop decision before any selection-execution work.
+Resolve the trial-recording workflow and validate real gaze before using this
+comparison for a product decision. Gate B does not enable clicks; make an
+explicit go, pivot, or stop decision before any selection-execution work.

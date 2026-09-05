@@ -53,6 +53,11 @@ def render_presets() -> tuple[dict, ...]:
         {"name": "top_right_1280x720_two", "screen": (1280, 720), "targets": _targets(2, 1190, 24, 26, 8)},
         {"name": "fallback_700x500_large", "screen": (700, 500), "targets": _targets(2, 280, 80, 38, 32)},
         {"name": "logical_1280x720_dpr_1_5", "screen": (1280, 720), "targets": _targets(3, 530, 330, 22, 7)},
+        {"name": "rectangular_horizontal_1280x720", "screen": (1280, 720), "targets": _targets(2, 350, 280, 80, 10)},
+        {"name": "rectangular_vertical_1280x720", "screen": (1280, 720), "targets": (
+            TargetRect(1, 350, 220, 80, 80, .98, 0),
+            TargetRect(2, 350, 310, 80, 80, .97, 1),
+        )},
     )
 
 
@@ -88,8 +93,8 @@ def _render_one(preset: dict, output_dir: Path) -> dict:
     targets = preset["targets"]
     frame = _frame(width, height, targets)
     first, second = targets[0], targets[1]
-    point_x = (first.x + first.width + second.x) / 2.0
-    point_y = first.center.y
+    point_x = (first.center.x + second.center.x) / 2.0
+    point_y = (first.center.y + second.center.y) / 2.0
     trace = [PointerSample(t, point_x, point_y) for t in range(0, 201, 20)]
     snapshot = TargetSnapshot(1, targets, frame)
     overlay = LensOverlay(

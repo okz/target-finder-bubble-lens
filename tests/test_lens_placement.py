@@ -10,6 +10,7 @@ from target_finder_toolkit.lens_core import (
     choose_source_crop,
     lens_to_source,
     point_in_interaction_region,
+    prepare_lens_layout,
     rect_intersection_area,
     source_to_lens,
     transform_target_to_lens,
@@ -131,6 +132,43 @@ def test_source_crop_clamps_to_screen_edge():
     crop = choose_source_crop(Point(5, 5), lens, SCREEN, scale=3.0)
 
     assert crop == Rect(0, 0, 120, 120)
+
+
+@pytest.mark.parametrize("vertical", [False, True])
+@pytest.mark.parametrize("screen", [SCREEN, Rect(0, 0, 1280, 720), Rect(100, 50, 1280, 720)])
+def test_rectangular_lens_preserves_all_candidates_and_uniform_scale(vertical, screen):
+    targets = tuple(
+        TargetRect(id=i, x=screen.x + 200 + (0 if vertical else 60*i),
+                   y=screen.y + 160 + (60*i if vertical else 0), width=52, height=52)
+        for i in range(3)
+    )
+    layout = prepare_lens_layout(targets, screen)
+    assert layout.reason is None
+    rect, crop = layout.placement.rect, layout.crop
+    assert (rect.width, rect.height) == ((360, 424) if vertical else (424, 360))
+    assert rect.width / crop.width == pytest.approx(layout.effective_scale)
+    assert rect.height / crop.height == pytest.approx(layout.effective_scale)
+    assert layout.effective_scale >= 2
+    assert rect.x >= screen.x and rect.y >= screen.y
+    assert rect.right <= screen.right and rect.bottom <= screen.bottom
+    assert rect_intersection_area(rect, layout.placement.source_hull) == 0
+    for target in targets:
+        assert crop.x <= target.x and crop.y <= target.y
+        assert crop.right >= target.x + target.width
+        assert crop.bottom >= target.y + target.height
+        mapped = transform_target_to_lens(target, crop, rect)
+        assert mapped.width / target.width == pytest.approx(mapped.height / target.height)
+        restored = lens_to_source(source_to_lens(target.center, crop, rect), crop, rect)
+        assert restored.x == pytest.approx(target.center.x)
+        assert restored.y == pytest.approx(target.center.y)
+
+
+def test_rectangular_lens_is_suppressed_when_no_nonoverlapping_space_exists():
+    screen = Rect(0, 0, 500, 500)
+    targets = (TargetRect(1, 130, 210, 80, 80), TargetRect(2, 220, 210, 80, 80))
+    layout = prepare_lens_layout(targets, screen)
+    assert layout.placement is None
+    assert layout.reason == "lens_suppressed_no_safe_placement"
 
 
 def test_point_transform_round_trip():

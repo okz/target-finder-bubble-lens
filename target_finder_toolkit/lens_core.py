@@ -307,33 +307,47 @@ def _clamp_rect_axis(position: float, size: float, low: float, high: float) -> f
     return _clamp(position, low, max(low, high - size))
 
 
+def _candidate_crop_hull(candidates: Iterable[TargetRect], screen: Rect, padding: float) -> Rect | None:
+    padded = union_rect(candidates, padding)
+    left, top = max(screen.x, padded.x), max(screen.y, padded.y)
+    right, bottom = min(screen.right, padded.right), min(screen.bottom, padded.bottom)
+    if left >= right or top >= bottom:
+        return None
+    return Rect(left, top, right - left, bottom - top)
+
+
 def choose_lens_rect(
     candidates: Iterable[TargetRect],
     screen: Rect,
     config: LensConfig = LensConfig(),
 ) -> LensPlacementResult:
-    """Choose a deterministic, fixed sidecar placement for a candidate cluster."""
+    """Choose a fixed sidecar, expanding each axis only as needed for minimum scale."""
 
+    candidates = tuple(candidates)
     source_hull = union_rect(candidates, config.source_hull_padding_px)
-    size = config.lens_size_px
-    if size <= screen.width and size <= screen.height:
+    required = _candidate_crop_hull(candidates, screen, config.crop_margin_px)
+    if required is None:
+        return LensPlacementResult(None, "lens_suppressed_cluster_too_large")
+    width = max(config.lens_size_px, required.width * config.minimum_lens_scale)
+    height = max(config.lens_size_px, required.height * config.minimum_lens_scale)
+    if width <= screen.width and height <= screen.height:
         positions = (
             (
                 "right",
                 source_hull.right + config.lens_gap_px,
                 _clamp_rect_axis(
-                    source_hull.center.y - size / 2.0,
-                    size,
+                    source_hull.center.y - height / 2.0,
+                    height,
                     screen.y,
                     screen.bottom,
                 ),
             ),
             (
                 "left",
-                source_hull.x - config.lens_gap_px - size,
+                source_hull.x - config.lens_gap_px - width,
                 _clamp_rect_axis(
-                    source_hull.center.y - size / 2.0,
-                    size,
+                    source_hull.center.y - height / 2.0,
+                    height,
                     screen.y,
                     screen.bottom,
                 ),
@@ -341,8 +355,8 @@ def choose_lens_rect(
             (
                 "below",
                 _clamp_rect_axis(
-                    source_hull.center.x - size / 2.0,
-                    size,
+                    source_hull.center.x - width / 2.0,
+                    width,
                     screen.x,
                     screen.right,
                 ),
@@ -351,16 +365,16 @@ def choose_lens_rect(
             (
                 "above",
                 _clamp_rect_axis(
-                    source_hull.center.x - size / 2.0,
-                    size,
+                    source_hull.center.x - width / 2.0,
+                    width,
                     screen.x,
                     screen.right,
                 ),
-                source_hull.y - config.lens_gap_px - size,
+                source_hull.y - config.lens_gap_px - height,
             ),
         )
         for side, x, y in positions:
-            rect = Rect(x, y, size, size)
+            rect = Rect(x, y, width, height)
             entirely_on_screen = (
                 rect.x >= screen.x
                 and rect.y >= screen.y
@@ -372,14 +386,14 @@ def choose_lens_rect(
 
         dock = Rect(
             _clamp_rect_axis(
-                screen.center.x - size / 2.0,
-                size,
+                screen.center.x - width / 2.0,
+                width,
                 screen.x,
                 screen.right,
             ),
-            screen.bottom - size,
-            size,
-            size,
+            screen.bottom - height,
+            width,
+            height,
         )
         if rect_intersection_area(dock, source_hull) == 0.0:
             return LensPlacementResult(
@@ -394,34 +408,23 @@ def choose_candidate_crop(
     screen: Rect,
     config: LensConfig = LensConfig(),
 ) -> LensCropResult:
-    """Fit a square crop around every candidate at a useful magnification."""
+    """Fit every candidate with the lens aspect ratio and one uniform scale."""
 
-    padded = union_rect(candidates, config.crop_margin_px)
-    required_left = max(screen.x, padded.x)
-    required_top = max(screen.y, padded.y)
-    required_right = min(screen.right, padded.right)
-    required_bottom = min(screen.bottom, padded.bottom)
-    if required_left >= required_right or required_top >= required_bottom:
-        return LensCropResult(None, 0.0, padded, "lens_suppressed_cluster_too_large")
-    required = Rect(
-        required_left,
-        required_top,
-        required_right - required_left,
-        required_bottom - required_top,
-    )
-    minimum_side = max(required.width, required.height)
-    preferred_side = lens_rect.width / config.lens_scale
-    side = max(minimum_side, preferred_side)
-    if side > screen.width or side > screen.height:
-        return LensCropResult(None, 0.0, required, "lens_suppressed_cluster_too_large")
-    x = _clamp_rect_axis(required.center.x - side / 2.0, side, screen.x, screen.right)
-    y = _clamp_rect_axis(required.center.y - side / 2.0, side, screen.y, screen.bottom)
-    crop = Rect(x, y, side, side)
+    candidates = tuple(candidates)
+    required = _candidate_crop_hull(candidates, screen, config.crop_margin_px)
+    if required is None:
+        return LensCropResult(None, 0.0, union_rect(candidates), "lens_suppressed_cluster_too_large")
     effective_scale = min(
         config.lens_scale,
-        lens_rect.width / crop.width,
-        lens_rect.height / crop.height,
+        lens_rect.width / required.width,
+        lens_rect.height / required.height,
     )
+    width, height = lens_rect.width / effective_scale, lens_rect.height / effective_scale
+    if width > screen.width or height > screen.height:
+        return LensCropResult(None, 0.0, required, "lens_suppressed_cluster_too_large")
+    x = _clamp_rect_axis(required.center.x - width / 2.0, width, screen.x, screen.right)
+    y = _clamp_rect_axis(required.center.y - height / 2.0, height, screen.y, screen.bottom)
+    crop = Rect(x, y, width, height)
     if effective_scale < config.minimum_lens_scale:
         return LensCropResult(
             None,

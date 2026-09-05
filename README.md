@@ -206,11 +206,14 @@ After installation, `bubblecursor` runs the Bubble Cursor interaction technique.
 stable 200 ms fixation near multiple plausible controls, it opens a fixed
 sidecar lens using the detector's clean frame and stable target IDs.
 
-The frozen crop expands to include every ambiguous candidate with a 20 px
-margin. It uses up to 3× magnification and suppresses the lens if the cluster
-cannot fit at 2× or greater. Placement tries right, left, below, and above at
-the full 360 px size, then a full-size bottom-centred dock; it never shrinks or
-overlaps the source controls.
+The frozen crop includes every ambiguous candidate with a 20 px margin,
+clipped at screen edges. The lens starts at 360×360 px and expands its width
+or height when needed to retain at least 2× magnification. The matching crop
+preserves uniform scale up to 3×, so rectangular lenses do not stretch controls.
+Placement tries right, left, below, and above, then a bottom-centred dock.
+The chosen rectangle stays fixed while open. If it cannot fit safely on screen,
+the lens is suppressed; it never shrinks below its base size or overlaps the
+source controls.
 
 The prototype is **dry-run only**: Enter requests confirmation of the highlighted target, Escape
 closes the lens, and `q` quits. It contains no operating-system click path.
@@ -281,9 +284,9 @@ python tools/evaluate_synthetic_ambiguity.py `
 The zero-bias selection-ambiguity evaluation and trigger rationale are
 recorded in `docs/synthetic-evaluation.md`.
 The corrected gate counts lenses that pass the runtime layout checks and
-contain the intended target. Its current 72.26% recall fails the unchanged 80%
-requirement; the older 80.68% figure counts trigger attempts only. Geometry
-checks do not measure completed gaze acquisition.
+contain the intended target. Rectangular layouts raise displayed-lens recall
+from 72.26% to 80.68%, passing the unchanged 80% requirement in the current
+synthetic matrix. Geometry checks do not measure completed gaze acquisition.
 The real-gaze comparison procedure is in `docs/human-gate-b.md`.
 
 ### Semantic Pointing
