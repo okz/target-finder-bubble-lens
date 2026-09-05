@@ -21,6 +21,7 @@ from target_finder_toolkit.lens_core import (
     bubble_solution,
     choose_lens_rect,
     choose_candidate_crop,
+    prepare_lens_layout,
     rect_intersection_area,
     source_to_lens,
     transform_target_to_lens,
@@ -111,6 +112,9 @@ def evaluate(
     config: LensConfig | None = None,
 ) -> dict:
     config = config or LensConfig()
+    if seeds < 1:
+        raise ValueError("seeds must be positive")
+    sigmas, gaps, widths, layouts = tuple(sigmas), tuple(gaps), tuple(widths), tuple(layouts)
     cells = []
     mapping_passed = 0
     mapping_total = 0
@@ -132,6 +136,10 @@ def evaluate(
                 for sigma in sigmas:
                     errors = 0
                     opens = 0
+                    displays = 0
+                    displays_with_intended = 0
+                    suppression_reasons: dict[str, int] = {}
+                    display_times: list[float] = []
                     winner_counts: dict[int | None, int] = {}
                     open_times: list[float] = []
                     candidate_sizes: list[int] = []
@@ -153,6 +161,15 @@ def evaluate(
                                 opens += 1
                                 open_times.append(sample.t_ms)
                                 candidate_sizes.append(len(step.frozen_candidate_ids))
+                                candidates = tuple(t for t in targets if t.id in step.frozen_candidate_ids)
+                                lens_layout = prepare_lens_layout(candidates, SCREEN, config)
+                                if lens_layout.reason is None:
+                                    displays += 1
+                                    displays_with_intended += int(intended.id in step.frozen_candidate_ids)
+                                    display_times.append(sample.t_ms)
+                                else:
+                                    reason = lens_layout.reason
+                                    suppression_reasons[reason] = suppression_reasons.get(reason, 0) + 1
                                 break
                     baseline_error = errors / seeds
                     probabilities = [count / seeds for count in winner_counts.values()]
@@ -181,6 +198,13 @@ def evaluate(
                             "selection_ambiguous": baseline_error >= 0.20
                             and len(winner_counts) >= 2,
                             "trigger_open_rate": opens / seeds,
+                            "trigger_attempts": opens,
+                            "displayed_lenses": displays,
+                            "displayed_with_intended_target": displays_with_intended,
+                            "display_open_rate": displays / seeds,
+                            "suppressed_lenses": opens - displays,
+                            "suppression_reasons": suppression_reasons,
+                            "display_open_times_ms": display_times,
                             "median_open_time_ms": (
                                 statistics.median(open_times) if open_times else None
                             ),
@@ -201,6 +225,15 @@ def evaluate(
         if ambiguous_trials
         else None
     )
+    displayed_candidate_recall = (
+        sum(cell["displayed_with_intended_target"] for cell in ambiguous) / ambiguous_trials
+        if ambiguous_trials else None
+    )
+    displayed_false_open_rate = (
+        sum(cell["displayed_lenses"] for cell in easy) / easy_trials if easy_trials else None
+    )
+    display_times = [t for cell in ambiguous for t in cell["display_open_times_ms"]]
+    median_display_time = statistics.median(display_times) if display_times else None
     false_open_rate = (
         sum(cell["trigger_open_rate"] * cell["trials"] for cell in easy) / easy_trials
         if easy_trials
@@ -226,16 +259,24 @@ def evaluate(
     )
 
     gates = {
-        "selection_ambiguity_recall_at_least_0_80": selection_ambiguity_recall is not None
-        and selection_ambiguity_recall >= 0.80,
-        "easy_false_open_at_most_0_10": false_open_rate is not None and false_open_rate <= 0.10,
-        "median_open_time_190_to_260_ms": median_open_time is not None
-        and 190 <= median_open_time <= 260,
+        "displayed_candidate_recall_at_least_0_80": displayed_candidate_recall is not None
+        and displayed_candidate_recall >= 0.80,
+        "easy_displayed_false_open_at_most_0_10": displayed_false_open_rate is not None and displayed_false_open_rate <= 0.10,
+        "median_display_time_190_to_260_ms": median_display_time is not None
+        and 190 <= median_display_time <= 260,
         "placement_success_1_00": placement_success == 1.0,
         "mapping_accuracy_1_00": mapping_accuracy == 1.0,
     }
     return {
         "passed": all(gates.values()),
+        "evaluation_scope": "display_availability_and_ideal_geometry_only",
+        "acquisition_evaluated": False,
+        "metric_notes": {
+            "selection_ambiguity_recall": "Legacy trigger-only rate; does not include runtime suppression.",
+            "displayed_candidate_recall": "Ambiguous-cell trials displaying a lens containing the intended target, divided by all ambiguous-cell trials.",
+            "mapping_accuracy": "Exact transformed target centers, not noisy gaze or completed acquisition.",
+            "geometry_suppression_rate": "Legacy full-layout stress check; runtime suppression counts are separate.",
+        },
         "parameters": {
             "seeds_per_cell": seeds,
             "sigmas_px": list(sigmas),
@@ -266,6 +307,17 @@ def evaluate(
             "ambiguous_cell_count": len(ambiguous),
             "easy_cell_count": len(easy),
             "selection_ambiguity_recall": selection_ambiguity_recall,
+            "displayed_candidate_recall": displayed_candidate_recall,
+            "displayed_false_open_rate": displayed_false_open_rate,
+            "median_display_time_ms": median_display_time,
+            "trigger_attempts": sum(cell["trigger_attempts"] for cell in cells),
+            "displayed_lenses": sum(cell["displayed_lenses"] for cell in cells),
+            "suppressed_lenses": sum(cell["suppressed_lenses"] for cell in cells),
+            "displayed_without_intended_target": sum(
+                cell["displayed_lenses"] - cell["displayed_with_intended_target"] for cell in cells
+            ),
+            "completed_selections": None,
+            "acquisition_accuracy": None,
             "false_open_rate": false_open_rate,
             "median_open_time_ms": median_open_time,
             "mean_candidate_set_size": (

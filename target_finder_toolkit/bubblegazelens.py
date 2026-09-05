@@ -28,11 +28,11 @@ from target_finder_toolkit.lens_core import (
     Rect,
     TargetRect,
     bubble_solution,
-    choose_candidate_crop,
     choose_lens_rect,
     filter_and_deduplicate,
     intersection_over_union,
     point_in_interaction_region,
+    prepare_lens_layout,
     transform_target_to_lens,
 )
 AMBER = QtGui.QColor(255, 176, 32, 235)
@@ -422,6 +422,8 @@ class LensOverlay(QtWidgets.QWidget):
         self._close_requested = False
         self._close_reason: str | None = None
         self._selection_requested = False
+        self._confirmation_target: TargetRect | None = None
+        self._lens_entered = False
         self._scroll_requested = False
         self._last_source_change_fraction: float | None = None
         self._last_suppression_details: dict | None = None
@@ -481,18 +483,22 @@ class LensOverlay(QtWidgets.QWidget):
 
     @QtCore.pyqtSlot()
     def confirm_selection(self) -> None:
-        if self._frozen is None or self._selected_target is None or self._last_sample is None:
+        if (
+            self._selection_requested
+            or self.machine.state in (LensStateName.FEEDBACK, LensStateName.COOLDOWN)
+            or self._last_sample is None
+            or not self._last_sample.valid
+        ):
             return
-        self.logger.write(
-            {
-                "t_ms": self._last_sample.t_ms,
-                "event": "selection_dry_run",
-                "state": LensStateName.LENS_OPEN.value,
-                "target_id": self._selected_target.id,
-                "snapshot_generation": self._frozen.generation,
-            }
+        target = (
+            self._selected_target if self._frozen is not None
+            else bubble_solution(self._last_sample.point, self._snapshot.targets, self.config).primary
         )
-        self._selection_requested = True
+        if target is not None:
+            # A request is committed only after the next pointer update/snapshot is
+            # checked. Never turn a changed highlight into a different selection.
+            self._confirmation_target = target
+            self._selection_requested = True
 
     def _log_step(self, step: LensStep, sample: PointerSample) -> None:
         if not step.events:
@@ -572,36 +578,25 @@ class LensOverlay(QtWidgets.QWidget):
             for target in filter_and_deduplicate(self._snapshot.targets, self.config)
             if target.id in candidate_ids
         )
-        if len(candidates) < 2:
-            return "target_invalidated"
-        placement_result = choose_lens_rect(candidates, self.screen_rect, self.config)
-        if placement_result.placement is None:
-            self._last_suppression_details = {"reason": placement_result.reason}
-            return placement_result.reason
-        placement = placement_result.placement
-        crop_result = choose_candidate_crop(
-            candidates,
-            placement.rect,
-            self.screen_rect,
-            self.config,
-        )
-        if crop_result.crop is None:
+        layout = prepare_lens_layout(candidates, self.screen_rect, self.config)
+        if layout.reason is not None:
             self._last_suppression_details = {
-                "reason": crop_result.reason,
-                "required_hull": asdict(crop_result.required_hull),
-                "effective_scale": crop_result.effective_scale,
+                "reason": layout.reason,
+                "required_hull": None if layout.required_hull is None else asdict(layout.required_hull),
+                "effective_scale": layout.effective_scale,
                 "minimum_scale": self.config.minimum_lens_scale,
             }
-            return crop_result.reason
+            return layout.reason
         self._frozen = FrozenLens(
             generation=self._snapshot.generation,
             frame=self._snapshot.frame.copy(),
             candidates=candidates,
-            placement=placement,
-            source_crop=crop_result.crop,
-            effective_scale=crop_result.effective_scale,
+            placement=layout.placement,
+            source_crop=layout.crop,
+            effective_scale=layout.effective_scale,
             opened_at_ms=sample.t_ms,
         )
+        self._lens_entered = False
         return None
 
     def _update_pending_preview(self, step: LensStep) -> None:
@@ -625,6 +620,15 @@ class LensOverlay(QtWidgets.QWidget):
         point = sample.point
         if not _contains(self._frozen.placement.rect, point):
             return
+        if not self._lens_entered:
+            self._lens_entered = True
+            self.logger.write({
+                "event": "lens_first_entry",
+                "t_ms": sample.t_ms,
+                "interaction_mode": self.interaction_mode,
+                "transfer_time_ms": sample.t_ms - self._frozen.opened_at_ms,
+                "snapshot_generation": self._frozen.generation,
+            })
         transformed = tuple(
             transform_target_to_lens(
                 target,
@@ -698,6 +702,23 @@ class LensOverlay(QtWidgets.QWidget):
                 self.config,
             )
         trigger_targets = () if self.interaction_mode == "bubble" else self._snapshot.targets
+        state_before = self.machine.state
+        confirmation = None
+        if self._selection_requested and sample.valid:
+            if self._frozen is not None:
+                self._update_lens_selection(sample)
+                candidate = self._selected_target
+            else:
+                candidate = bubble_solution(sample.point, self._snapshot.targets, self.config).primary
+            requested = self._confirmation_target
+            if (
+                candidate is not None and requested is not None
+                and candidate.id == requested.id
+                and candidate.class_id == requested.class_id
+                and intersection_over_union(candidate, requested) >= 0.50
+                and not self._scroll_requested
+            ):
+                confirmation = candidate
         step = self.machine.step(
             sample.t_ms,
             sample,
@@ -706,11 +727,36 @@ class LensOverlay(QtWidgets.QWidget):
             close_requested=self._close_requested,
             close_reason=close_reason or self._close_reason,
             pointer_in_interaction_region=pointer_in_region,
-            selection_requested=self._selection_requested,
+            selection_requested=confirmation is not None,
         )
+        if "selection_feedback_started" in step.events and confirmation is not None:
+            self._selected_target = confirmation
+            self.logger.write({
+                "event": "selection_dry_run",
+                "t_ms": sample.t_ms,
+                "state": state_before.value,
+                "accepted_state": step.state.value,
+                "interaction_mode": self.interaction_mode,
+                "selection_space": "lens" if self._frozen is not None else "source",
+                "target_id": confirmation.id,
+                "snapshot_generation": self._snapshot.generation,
+                "frozen_generation": None if self._frozen is None else self._frozen.generation,
+                "pointer": {"x": sample.x, "y": sample.y, "valid": sample.valid},
+            })
+        elif self._selection_requested:
+            self.logger.write({
+                "event": "selection_rejected",
+                "t_ms": sample.t_ms,
+                "interaction_mode": self.interaction_mode,
+                "reason": close_reason or self._close_reason or (
+                    "source_scrolled" if self._scroll_requested else
+                    "invalid_tracking" if not sample.valid else "selection_no_longer_available"
+                ),
+            })
         self._close_requested = False
         self._close_reason = None
         self._selection_requested = False
+        self._confirmation_target = None
         self._scroll_requested = False
         if "lens_opened" in step.events:
             suppression_reason = self._freeze_lens(step, sample)
@@ -744,6 +790,17 @@ class LensOverlay(QtWidgets.QWidget):
         painter.drawLine(QtCore.QPointF(point.x, point.y + 7), QtCore.QPointF(point.x, point.y + 11))
 
     def _draw_bubble(self, painter: QtGui.QPainter) -> None:
+        if self.machine.state is LensStateName.FEEDBACK and self._selected_target is not None:
+            target = self._selected_target
+            painter.setPen(QtGui.QPen(AMBER, 4))
+            painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(
+                QtCore.QRectF(target.x, target.y, target.width, target.height), 5, 5
+            )
+            painter.drawText(
+                QtCore.QPointF(target.x, max(20, target.y - 8)), "DRY RUN  •  selected"
+            )
+            return
         if self._last_sample is None or not self._last_sample.valid:
             return
         solution = bubble_solution(self._last_sample.point, self._snapshot.targets, self.config)
@@ -853,7 +910,7 @@ class LensOverlay(QtWidgets.QWidget):
 
     def _paint(self, painter: QtGui.QPainter) -> None:
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
-        if self._last_step is not None and self._last_step.state in {
+        if self._frozen is not None and self._last_step is not None and self._last_step.state in {
             LensStateName.LENS_OPEN,
             LensStateName.EXIT_GRACE,
             LensStateName.FEEDBACK,
@@ -888,7 +945,8 @@ class LiveKeyboardController:
         self._keyboard = keyboard
         self._overlay = overlay
         self._stop_callback = stop_callback
-        self._listener = keyboard.Listener(on_press=self._on_press)
+        self._enter_down = False
+        self._listener = keyboard.Listener(on_press=self._on_press, on_release=self._on_release)
         self._scroll_listener = mouse.Listener(on_scroll=self._on_scroll)
 
     def _on_press(self, key) -> None:
@@ -897,6 +955,9 @@ class LiveKeyboardController:
                 self._overlay, "request_close", QtCore.Qt.ConnectionType.QueuedConnection
             )
         elif key == self._keyboard.Key.enter:
+            if self._enter_down:
+                return
+            self._enter_down = True
             QtCore.QMetaObject.invokeMethod(
                 self._overlay, "confirm_selection", QtCore.Qt.ConnectionType.QueuedConnection
             )
@@ -906,6 +967,10 @@ class LiveKeyboardController:
                     self._stop_callback()
             except AttributeError:
                 pass
+
+    def _on_release(self, key) -> None:
+        if key == self._keyboard.Key.enter:
+            self._enter_down = False
 
     def _on_scroll(self, _x, _y, _dx, _dy) -> None:
         QtCore.QMetaObject.invokeMethod(

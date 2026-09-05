@@ -212,8 +212,14 @@ cannot fit at 2× or greater. Placement tries right, left, below, and above at
 the full 360 px size, then a full-size bottom-centred dock; it never shrinks or
 overlaps the source controls.
 
-The prototype is **dry-run only**: Enter logs the highlighted target, Escape
+The prototype is **dry-run only**: Enter requests confirmation of the highlighted target, Escape
 closes the lens, and `q` quits. It contains no operating-system click path.
+Confirmation works in all three conditions, including when no lens is open.
+The next pointer sample and detector snapshot must still support the requested
+target; otherwise the request is rejected. Accepted source and lens selections
+use the same event schema and 200 ms feedback. Repeated Enter presses during
+feedback/cooldown, and keyboard auto-repeat while Enter is held, do not record
+additional selections.
 There is no fixed human-facing lens timeout. A 600 ms opening protection and a
 1,200 ms exit grace cover movement through the source-to-lens corridor. Moving
 back into the source, corridor, or lens cancels the grace period. Scrolling,
@@ -254,6 +260,10 @@ Gate B's three comparison conditions are available as
 stable fixation near at least two plausible targets; it ignores only the
 nearest-target dominance threshold. JSONL replay traces use the same logical
 pixel fields and can be run with `--pointer replay --replay-file PATH`.
+Logs distinguish accepted `selection_dry_run` and `selection_rejected` events.
+Accepted records include the condition, source/lens selection space, target ID,
+current and frozen snapshot generations, and acceptance-sample timestamp.
+`lens_first_entry` records the first valid gaze entry and time since opening.
 
 Run the deterministic core, replay, and offscreen rendering checks with:
 
@@ -268,8 +278,12 @@ python tools/evaluate_synthetic_ambiguity.py `
   --report artifacts/synthetic-evaluation.json
 ```
 
-The passing zero-bias selection-ambiguity gate and trigger rationale are
+The zero-bias selection-ambiguity evaluation and trigger rationale are
 recorded in `docs/synthetic-evaluation.md`.
+The corrected gate counts lenses that pass the runtime layout checks and
+contain the intended target. Its current 72.26% recall fails the unchanged 80%
+requirement; the older 80.68% figure counts trigger attempts only. Geometry
+checks do not measure completed gaze acquisition.
 The real-gaze comparison procedure is in `docs/human-gate-b.md`.
 
 ### Semantic Pointing

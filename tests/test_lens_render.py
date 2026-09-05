@@ -161,6 +161,8 @@ def test_dry_run_confirmation_logs_selection_and_never_clicks(qtbot, tmp_path):
     )
     overlay.tick()
     overlay.confirm_selection()
+    overlay.pointer_provider = ReplayPointerProvider([PointerSample(240, destination.x, destination.y)])
+    overlay.tick()
     logger.close()
 
     content = log_path.read_text(encoding="utf-8")
@@ -172,6 +174,98 @@ def test_dry_run_confirmation_logs_selection_and_never_clicks(qtbot, tmp_path):
     assert opened["selection_diagnostic"]["interpretation"] == (
         "fixation-center offset from current Bubble winner"
     )
+
+
+class RecordingLogger:
+    def __init__(self):
+        self.events = []
+
+    def write(self, payload):
+        self.events.append(payload)
+
+
+@pytest.mark.parametrize("mode", ["bubble", "auto-lens", "forced-lens"])
+def test_source_confirmation_has_common_feedback_and_event_schema(qtbot, mode):
+    snapshot = TargetSnapshot(1, (_targets()[0],), _frame())
+    logger = RecordingLogger()
+    overlay = LensOverlay(
+        lambda: snapshot, ReplayPointerProvider([PointerSample(0, 414, 314), PointerSample(20, 414, 314)]),
+        logger=logger, screen_rect=Rect(0, 0, 1280, 720), start_timer=False, interaction_mode=mode,
+    )
+    qtbot.addWidget(overlay)
+    overlay.tick()
+    overlay.confirm_selection()
+    overlay.confirm_selection()
+    assert not any(e.get("event") == "selection_dry_run" for e in logger.events)
+    overlay.tick()
+    selections = [e for e in logger.events if e.get("event") == "selection_dry_run"]
+    assert len(selections) == 1
+    assert selections[0]["selection_space"] == "source"
+    assert selections[0]["interaction_mode"] == mode
+    assert selections[0]["target_id"] == 1
+    assert selections[0]["t_ms"] == 20
+    assert selections[0]["accepted_state"] == "FEEDBACK"
+    assert overlay.machine.state is LensStateName.FEEDBACK
+    assert overlay.selected_target_id == 1
+    assert overlay.frozen_lens is None
+    overlay.render_to_image()
+    overlay.confirm_selection()
+    assert not overlay._selection_requested
+    overlay.pointer_provider = ReplayPointerProvider([PointerSample(220, 414, 314)])
+    overlay.tick()
+    assert overlay.machine.state is LensStateName.COOLDOWN
+    overlay.confirm_selection()
+    assert not overlay._selection_requested
+
+
+@pytest.mark.parametrize("change", ["invalid", "moved", "removed", "scroll", "close"])
+def test_confirmation_revalidates_before_logging(qtbot, change):
+    overlay, snapshot = _open_overlay(qtbot)
+    logger = RecordingLogger()
+    overlay.logger = logger
+    frozen = overlay.frozen_lens
+    destination = source_to_lens(snapshot.targets[0].center, frozen.source_crop, frozen.placement.rect)
+    overlay.pointer_provider = ReplayPointerProvider([PointerSample(220, destination.x, destination.y)])
+    overlay.tick()
+    overlay.confirm_selection()
+    point = destination
+    if change == "moved":
+        point = source_to_lens(snapshot.targets[1].center, frozen.source_crop, frozen.placement.rect)
+    elif change == "removed":
+        overlay.snapshot_reader = lambda: TargetSnapshot(2, (), snapshot.frame)
+    elif change == "scroll":
+        overlay.request_scroll_close()
+    elif change == "close":
+        overlay.request_close()
+    overlay.pointer_provider = ReplayPointerProvider([PointerSample(240, point.x, point.y, change != "invalid")])
+    overlay.tick()
+    assert not any(e.get("event") == "selection_dry_run" for e in logger.events)
+    assert any(e.get("event") == "selection_rejected" for e in logger.events)
+    assert overlay.machine.state is not LensStateName.FEEDBACK
+
+
+def test_feedback_rejects_repeat_confirmation_and_entry_is_logged_once(qtbot):
+    overlay, snapshot = _open_overlay(qtbot)
+    logger = RecordingLogger()
+    overlay.logger = logger
+    frozen = overlay.frozen_lens
+    destination = source_to_lens(snapshot.targets[0].center, frozen.source_crop, frozen.placement.rect)
+    overlay.pointer_provider = ReplayPointerProvider([
+        PointerSample(220, destination.x, destination.y),
+        PointerSample(240, destination.x, destination.y),
+        PointerSample(260, destination.x, destination.y, False),
+    ])
+    overlay.tick()
+    overlay.confirm_selection()
+    overlay.tick()
+    overlay.confirm_selection()
+    overlay.tick()
+    overlay.confirm_selection()
+    assert len([e for e in logger.events if e.get("event") == "selection_dry_run"]) == 1
+    entries = [e for e in logger.events if e.get("event") == "lens_first_entry"]
+    assert len(entries) == 1
+    assert entries[0]["transfer_time_ms"] == 20
+    assert not overlay._selection_requested
 
 
 def test_changed_candidate_set_invalidates_open_lens(qtbot):

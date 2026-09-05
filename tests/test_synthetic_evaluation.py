@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 
 
@@ -72,9 +73,27 @@ def test_trace_is_centered_on_the_intended_target_without_an_offset_parameter():
     assert abs(mean_y - intended.center.y) < 0.5
 
 
-def test_default_full_matrix_passes_selection_ambiguity_gates():
+def test_default_full_matrix_reports_display_shortfall_without_hiding_trigger_regression(tmp_path):
     report = MODULE.evaluate(seeds=100)
+    report_path = tmp_path / "synthetic-evaluation.json"
+    report_path.write_text(json.dumps(report, indent=2, allow_nan=False), encoding="utf-8")
+    print(f"Synthetic evaluation report: {report_path}")
 
-    assert report["passed"]
+    # Keep the historical trigger baseline, but do not mistake it for a
+    # displayed usable lens. A product gate failure is valid evaluator output.
+    assert not report["passed"]
     assert report["summary"]["selection_ambiguity_recall"] >= 0.80
     assert report["summary"]["false_open_rate"] <= 0.10
+    assert report["summary"]["displayed_candidate_recall"] < 0.80
+    assert not report["acquisition_evaluated"]
+    assert report["summary"]["acquisition_accuracy"] is None
+
+
+def test_dense_runtime_candidates_are_counted_as_suppression():
+    report = MODULE.evaluate(seeds=100, layouts=("toolbar",), widths=(52,), gaps=(8,), sigmas=(25,))
+    cell = report["cells"][0]
+    assert cell["trigger_attempts"] == 82
+    assert cell["displayed_lenses"] == 15
+    assert cell["suppressed_lenses"] == 67
+    assert cell["suppression_reasons"] == {"lens_suppressed_cluster_too_large": 67}
+    assert report["summary"]["displayed_candidate_recall"] == 0.15

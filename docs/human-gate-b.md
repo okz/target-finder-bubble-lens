@@ -49,6 +49,16 @@ finds no blocking issue.
 
 ## Record per task
 
+Enter uses a common dry-run confirmation path in all three conditions, even
+when no lens opens. A selection is logged only after the next pointer update and
+the current detector snapshot still support the requested target. Feedback and
+cooldown prevent duplicate acceptance; held Enter does not auto-repeat.
+The accepted event contains the interaction mode, source/lens selection space,
+target ID, snapshot generations and acceptance time. Rejected requests are
+separate events. `lens_first_entry` provides first-entry latency directly.
+Task starts and intended target IDs still need to be recorded by the study
+harness or observer; the application does not infer trial boundaries.
+
 - participant, condition, randomized order, task ID, and target-density class;
 - intended and dry-run-selected target IDs, correctness, and acquisition time;
 - whether the lens opened and whether it was needed;
@@ -72,8 +82,12 @@ and the fixation-center offset from the current Bubble winner.
 - At least 80% of lens appearances are followed by gaze entry within 700 ms.
 - Invalid tracking closes an open lens safely.
 
-The corrected synthetic automatic-trigger gate passes with 80.68%
-selection-ambiguity recall and 1.39% easy-cell false opens. Calibration offsets
-are excluded from those statistics. Gate B is still required and is not
-permission to enable clicks. After the run, make an explicit go, pivot, or stop
-decision before any selection-execution work.
+The corrected synthetic display-availability gate currently fails: 72.26% of
+ambiguous-cell trials display a lens containing the intended target, below the
+unchanged 80% criterion. The older 80.68% result counts trigger attempts before
+runtime geometry suppression. Displayed easy-cell false opens are 1.36%.
+Calibration offsets remain excluded; completed acquisition is not simulated.
+Resolve the display shortfall and trial-recording workflow before using this
+comparison for a product decision. Exploratory dry-run observations may inform
+that design work. Gate B does not enable clicks; make an explicit go, pivot, or
+stop decision before any selection-execution work.

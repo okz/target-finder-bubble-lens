@@ -225,6 +225,15 @@ class LensCropResult:
     reason: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class LensLayoutResult:
+    placement: LensPlacement | None = None
+    crop: Rect | None = None
+    effective_scale: float = 0.0
+    required_hull: Rect | None = None
+    reason: str | None = None
+
+
 class LensStateName(str, Enum):
     NORMAL = "NORMAL"
     PENDING = "PENDING"
@@ -421,6 +430,23 @@ def choose_candidate_crop(
             "lens_suppressed_cluster_too_large",
         )
     return LensCropResult(crop, effective_scale, required)
+
+
+def prepare_lens_layout(
+    candidates: Iterable[TargetRect], screen: Rect, config: LensConfig = LensConfig(),
+) -> LensLayoutResult:
+    """Shared runtime/evaluation gate for displaying the actual candidate set."""
+    candidates = filter_and_deduplicate(candidates, config)
+    if len(candidates) < 2:
+        return LensLayoutResult(reason="target_invalidated")
+    placement = choose_lens_rect(candidates, screen, config)
+    if placement.placement is None:
+        return LensLayoutResult(reason=placement.reason)
+    crop = choose_candidate_crop(candidates, placement.placement.rect, screen, config)
+    return LensLayoutResult(
+        placement=placement.placement, crop=crop.crop, effective_scale=crop.effective_scale,
+        required_hull=crop.required_hull, reason=crop.reason,
+    )
 
 
 def expand_rect(rect: Rect, padding: float) -> Rect:
@@ -776,22 +802,32 @@ class LensStateMachine:
                 feedback_until_ms=self._feedback_until_ms,
             )
 
+        if (
+            selection_requested
+            and sample.valid
+            and not close_requested
+            and close_reason is None
+            and self.state in (
+                LensStateName.NORMAL, LensStateName.PENDING,
+                LensStateName.LENS_OPEN, LensStateName.EXIT_GRACE,
+            )
+        ):
+            self.state = LensStateName.FEEDBACK
+            self._feedback_until_ms = now_ms + self.config.selection_feedback_ms
+            self._outside_since_ms = None
+            return LensStep(
+                self.state,
+                ("selection_feedback_started",),
+                self._empty_decision(),
+                frozen_candidate_ids=self._frozen_candidate_ids,
+                feedback_until_ms=self._feedback_until_ms,
+            )
+
         if self.state in (LensStateName.LENS_OPEN, LensStateName.EXIT_GRACE):
             if sample.valid:
                 self._last_valid_ms = now_ms
             if close_requested or close_reason is not None:
                 return self._start_cooldown(now_ms, close_reason or "lens_closed")
-            if selection_requested:
-                self.state = LensStateName.FEEDBACK
-                self._feedback_until_ms = now_ms + self.config.selection_feedback_ms
-                self._outside_since_ms = None
-                return LensStep(
-                    self.state,
-                    ("selection_feedback_started",),
-                    self._empty_decision(),
-                    frozen_candidate_ids=self._frozen_candidate_ids,
-                    feedback_until_ms=self._feedback_until_ms,
-                )
             if (
                 self.config.test_watchdog_ms is not None
                 and self._opened_at_ms is not None
@@ -921,6 +957,7 @@ __all__ = [
     "AmbiguitySolution",
     "BubbleSolution",
     "LensConfig",
+    "LensLayoutResult",
     "LensCropResult",
     "LensPlacement",
     "LensPlacementResult",
@@ -947,6 +984,7 @@ __all__ = [
     "point_rect_distance",
     "point_in_interaction_region",
     "point_segment_distance",
+    "prepare_lens_layout",
     "rect_intersection_area",
     "source_to_lens",
     "transform_target_to_lens",
