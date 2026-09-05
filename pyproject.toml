@@ -53,7 +53,7 @@ Documentation = "https://target-finder-toolkit.netlify.app/"
 include-package-data = true
 
 [tool.setuptools.package-data]
-"target_finder_toolkit" = ["models/*.pt"]
+"target_finder_toolkit" = ["models/*.pt", "study_page.html"]
 
 [tool.setuptools.packages.find]
 where = ["."]

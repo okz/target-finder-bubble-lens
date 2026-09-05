@@ -309,21 +309,24 @@ class UdpGazeProvider:
 class JsonlLogger:
     def __init__(self, path: Path | None, config: LensConfig) -> None:
         self._stream = None
+        self._lock = threading.Lock()
         if path is not None:
             path.parent.mkdir(parents=True, exist_ok=True)
             self._stream = path.open("a", encoding="utf-8")
             self.write({"event": "session_started", "config": asdict(config)})
 
     def write(self, payload: dict) -> None:
-        if self._stream is None:
-            return
-        self._stream.write(json.dumps(payload, default=sorted, allow_nan=False) + "\n")
-        self._stream.flush()
+        with self._lock:
+            if self._stream is None:
+                return
+            self._stream.write(json.dumps(payload, default=sorted, allow_nan=False) + "\n")
+            self._stream.flush()
 
     def close(self) -> None:
-        if self._stream is not None:
-            self._stream.close()
-            self._stream = None
+        with self._lock:
+            if self._stream is not None:
+                self._stream.close()
+                self._stream = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -398,6 +401,7 @@ class LensOverlay(QtWidgets.QWidget):
         screen_rect: Rect | None = None,
         start_timer: bool = True,
         interaction_mode: str = "auto-lens",
+        study=None,
     ) -> None:
         super().__init__()
         self.snapshot_reader = snapshot_reader
@@ -406,6 +410,9 @@ class LensOverlay(QtWidgets.QWidget):
         if interaction_mode not in {"bubble", "forced-lens", "auto-lens"}:
             raise ValueError(f"Unsupported interaction mode: {interaction_mode}")
         self.interaction_mode = interaction_mode
+        self.study = study
+        self._study_trial_id = None
+        self._study_key = None
         self.logger = logger or JsonlLogger(None, self.config)
         machine_config = (
             replace(self.config, ambiguity_threshold=0.0)
@@ -484,7 +491,8 @@ class LensOverlay(QtWidgets.QWidget):
     @QtCore.pyqtSlot()
     def confirm_selection(self) -> None:
         if (
-            self._selection_requested
+            (self.study is not None and self._study_trial_id is None)
+            or self._selection_requested
             or self.machine.state in (LensStateName.FEEDBACK, LensStateName.COOLDOWN)
             or self._last_sample is None
             or not self._last_sample.valid
@@ -519,6 +527,8 @@ class LensOverlay(QtWidgets.QWidget):
                         "interpretation": "fixation-center offset from current Bubble winner",
                     }
             payload = {
+                "interaction_mode": self.interaction_mode,
+                "study_trial_id": self._study_trial_id,
                 "t_ms": sample.t_ms,
                 "event": event,
                 "state": step.state.value,
@@ -624,6 +634,7 @@ class LensOverlay(QtWidgets.QWidget):
             self._lens_entered = True
             self.logger.write({
                 "event": "lens_first_entry",
+                "study_trial_id": self._study_trial_id,
                 "t_ms": sample.t_ms,
                 "interaction_mode": self.interaction_mode,
                 "transfer_time_ms": sample.t_ms - self._frozen.opened_at_ms,
@@ -669,6 +680,18 @@ class LensOverlay(QtWidgets.QWidget):
 
     @QtCore.pyqtSlot()
     def tick(self) -> None:
+        if self.study is not None:
+            key = self.study.control_state()
+            if key != self._study_key:
+                self._study_key = key
+                self.interaction_mode, self._study_trial_id = key
+                machine_config = (replace(self.config, ambiguity_threshold=0.0)
+                                  if self.interaction_mode == "forced-lens" else self.config)
+                self.machine = LensStateMachine(machine_config)
+                self._frozen = self._selected_target = self._confirmation_target = None
+                self._last_sample = self._last_step = self._pending_placement = None
+                self._selection_requested = self._close_requested = self._scroll_requested = False
+                self._close_reason = None
         sample = self.pointer_provider.get_sample()
         if sample is None:
             return
@@ -701,7 +724,9 @@ class LensOverlay(QtWidgets.QWidget):
                 self._frozen.placement.rect,
                 self.config,
             )
-        trigger_targets = () if self.interaction_mode == "bubble" else self._snapshot.targets
+        trigger_targets = (() if self.interaction_mode == "bubble" or
+                           (self.study is not None and self._study_trial_id is None)
+                           else self._snapshot.targets)
         state_before = self.machine.state
         confirmation = None
         if self._selection_requested and sample.valid:
@@ -731,14 +756,18 @@ class LensOverlay(QtWidgets.QWidget):
         )
         if "selection_feedback_started" in step.events and confirmation is not None:
             self._selected_target = confirmation
+            source_target = (next(t for t in self._frozen.candidates if t.id == confirmation.id)
+                             if self._frozen is not None else confirmation)
             self.logger.write({
                 "event": "selection_dry_run",
+                "study_trial_id": self._study_trial_id,
                 "t_ms": sample.t_ms,
                 "state": state_before.value,
                 "accepted_state": step.state.value,
                 "interaction_mode": self.interaction_mode,
                 "selection_space": "lens" if self._frozen is not None else "source",
                 "target_id": confirmation.id,
+                "source_target": {key: getattr(source_target, key) for key in ("x", "y", "width", "height")},
                 "snapshot_generation": self._snapshot.generation,
                 "frozen_generation": None if self._frozen is None else self._frozen.generation,
                 "pointer": {"x": sample.x, "y": sample.y, "valid": sample.valid},
@@ -1034,6 +1063,10 @@ def _parser() -> argparse.ArgumentParser:
         help="Gate B comparison condition (default: auto-lens)",
     )
     parser.add_argument("--log", type=Path, default=Path("artifacts/lens-events.jsonl"))
+    parser.add_argument("--study", action="store_true", help="Serve the local controlled 72-task study; conditions switch automatically")
+    parser.add_argument("--study-participant", default="anonymous")
+    parser.add_argument("--study-seed", type=int, default=42)
+    parser.add_argument("--study-port", type=int, default=0, help="Loopback task page port; 0 chooses a free port")
     return parser
 
 
@@ -1042,6 +1075,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.pointer == "replay" and args.replay_file is None:
         parser.error("--replay-file is required when --pointer=replay")
+    if args.study and args.pointer == "replay":
+        parser.error("The controlled study requires live mouse or UDP input")
     from target_finder_toolkit.targetfinder import TargetFinder
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
@@ -1067,6 +1102,18 @@ def main() -> None:
         include_text_targets=args.include_text_targets,
     )
     logger = JsonlLogger(args.log, config)
+    study = study_server = None
+    if args.study:
+        from target_finder_toolkit.study import AcquisitionStudy, StudyLogger, StudyServer
+        geometry = app.primaryScreen().geometry()
+        try:
+            study = AcquisitionStudy(geometry.width(), geometry.height(),
+                                     participant=args.study_participant, seed=args.study_seed,
+                                     pointer=args.pointer, emit=logger.write)
+            study_server = StudyServer(study, args.study_port)
+        except (ValueError, OSError) as error:
+            parser.error(str(error))
+        logger = StudyLogger(logger, study)
     store = SnapshotStore()
     detector = TargetFinder(
         args.model,
@@ -1092,6 +1139,7 @@ def main() -> None:
         config,
         logger,
         interaction_mode=args.mode,
+        study=study,
     )
     detector.overlay_window["bubble-gaze-lens"] = overlay
 
@@ -1104,13 +1152,18 @@ def main() -> None:
     app.aboutToQuit.connect(detector.stop)
     app.aboutToQuit.connect(keyboard_controller.stop)
     app.aboutToQuit.connect(pointer_provider.close)
+    if study_server is not None:
+        app.aboutToQuit.connect(study_server.close)
     app.aboutToQuit.connect(logger.close)
     signal.signal(signal.SIGINT, lambda *_: stop())
 
     text_status = "included" if args.include_text_targets else "excluded"
     print(f"Bubble Gaze Lens: single monitor, logical coordinates, Text {text_status}")
     print("Selection mode: DRY RUN (no operating-system click path exists)")
-    print(f"Interaction condition: {args.mode}")
+    print(f"Interaction condition: {'controlled study schedule' if study is not None else args.mode}")
+    if study_server is not None:
+        study_server.start()
+        print(f"Controlled study (automatic condition order): {study_server.url}")
     if args.pointer == "udp":
         print(f"Gaze input: UDP JSON on 127.0.0.1:{pointer_provider.port}")
     elif args.pointer == "replay":
@@ -1118,7 +1171,8 @@ def main() -> None:
     else:
         print("Gaze input: mouse proxy")
     print(f"Effective configuration: {json.dumps(asdict(config), default=sorted)}")
-    print("Keys: Escape closes the lens, Enter logs a dry-run selection, q quits")
+    print("Keys: Escape ends the fullscreen study, Enter confirms, q quits" if study is not None
+          else "Keys: Escape closes the lens, Enter logs a dry-run selection, q quits")
     overlay.show()
     keyboard_controller.start()
     detector.start()

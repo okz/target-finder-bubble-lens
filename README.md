@@ -289,6 +289,18 @@ from 72.26% to 80.68%, passing the unchanged 80% requirement in the current
 synthetic matrix. Geometry checks do not measure completed gaze acquisition.
 The real-gaze comparison procedure is in `docs/human-gate-b.md`.
 
+For a controlled 72-task acquisition session with known intended targets,
+automatic condition changes, and JSON/CSV results:
+
+```powershell
+python -m target_finder_toolkit.bubblegazelens --study --study-participant P01 --study-seed 1 --pointer mouse --log artifacts/study-P01.jsonl
+```
+
+Open the printed localhost URL and enter fullscreen. Use `--pointer udp` for
+the tracker feed. The page supplies scoring ground truth only; selection still
+uses real detections. See `docs/controlled-acquisition-study.md` for timing,
+coordinate requirements, interruption behavior, and measurement limitations.
+
 ### Semantic Pointing
 
 After installation, `semanticpointing` runs the Semantic Pointing interaction technique.

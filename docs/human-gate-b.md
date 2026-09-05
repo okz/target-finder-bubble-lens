@@ -49,6 +49,11 @@ finds no blocking issue.
 
 ## Record per task
 
+The controlled acquisition runner (`--study`) now automates task starts,
+intended target IDs, condition changes and acquisition scoring. Follow
+[the controlled-study runbook](controlled-acquisition-study.md). The separate
+manual workflow below remains useful for arbitrary desktop applications.
+
 Enter uses a common dry-run confirmation path in all three conditions, even
 when no lens opens. A selection is logged only after the next pointer update and
 the current detector snapshot still support the requested target. Feedback and
@@ -56,8 +61,9 @@ cooldown prevent duplicate acceptance; held Enter does not auto-repeat.
 The accepted event contains the interaction mode, source/lens selection space,
 target ID, snapshot generations and acceptance time. Rejected requests are
 separate events. `lens_first_entry` provides first-entry latency directly.
-Task starts and intended target IDs still need to be recorded by the study
-harness or observer; the application does not infer trial boundaries.
+Outside the controlled runner, task starts and intended target IDs still need
+to be recorded by the observer; ordinary overlay mode does not infer trial
+boundaries.
 
 - participant, condition, randomized order, task ID, and target-density class;
 - intended and dry-run-selected target IDs, correctness, and acquisition time;
@@ -87,6 +93,6 @@ Rectangular layouts pass the corrected synthetic display-availability gate:
 above the unchanged 80% criterion. The square baseline achieved 72.26% under
 this corrected measurement. Displayed easy-cell false opens are 1.39%.
 Calibration offsets remain excluded; completed acquisition is not simulated.
-Resolve the trial-recording workflow and validate real gaze before using this
+Validate the controlled recording workflow with real gaze before using this
 comparison for a product decision. Gate B does not enable clicks; make an
 explicit go, pivot, or stop decision before any selection-execution work.

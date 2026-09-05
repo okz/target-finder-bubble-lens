@@ -169,6 +169,9 @@ def test_dry_run_confirmation_logs_selection_and_never_clicks(qtbot, tmp_path):
     events = [json.loads(line) for line in content.splitlines()]
     assert '"event": "selection_dry_run"' in content
     assert '"target_id": 2' in content
+    accepted = next(event for event in events if event.get("event") == "selection_dry_run")
+    assert accepted["source_target"] == {"x": 434, "y": 300, "width": 28, "height": 28}
+    assert accepted["selection_space"] == "lens"
     assert all(isinstance(event, dict) for event in events)
     opened = next(event for event in events if event.get("event") == "lens_opened")
     assert opened["selection_diagnostic"]["interpretation"] == (

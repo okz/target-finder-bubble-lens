@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bubble Gaze Lens · acquisition study</title>
+<style>
+  *{box-sizing:border-box} :root{font:16px system-ui,sans-serif;color:#18253b;background:#f2f4f8}
+  body{margin:0;overflow:hidden} #setup,#finish{max-width:650px;margin:9vh auto;padding:36px;background:white;border:1px solid #d9e0eb;border-radius:16px}
+  h1{font-size:28px;line-height:1.2;margin:10px 0 20px} p{line-height:1.65;color:#46566e}
+  .eyebrow{font-size:12px;letter-spacing:.1em;color:#536883;text-transform:uppercase}
+  button,.download{font:inherit;border-radius:8px;padding:12px 20px;border:1px solid #224c99;background:#224c99;color:white;cursor:pointer}
+  button:disabled{opacity:.45;cursor:default}.download{display:inline-block;text-decoration:none;margin:12px 8px 0 0}
+  #status{min-height:24px;color:#536883;font-size:14px} #board{position:fixed;inset:0;background:#f2f4f8}
+  #surface{position:absolute;left:0;top:0;transform-origin:0 0} #cue{position:absolute;top:36px;left:0;width:100%;text-align:center;font-size:30px;font-weight:600}
+  #progress{position:absolute;bottom:24px;left:0;width:100%;text-align:center;color:#596a82;font-size:15px}
+  .target{position:absolute;padding:0;border:1px solid #62728a;border-radius:4px;background:#fff;color:#18253b;font-size:16px;text-align:center;display:grid;place-items:center;cursor:default;user-select:none}
+  .fixation{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);font-size:36px;color:#64748b}
+  [hidden]{display:none!important} #error{color:#9a2727} table{border-collapse:collapse;width:100%;margin:18px 0}th,td{text-align:left;border-bottom:1px solid #e0e5ed;padding:10px 5px}
+</style>
+<section id="setup">
+  <div class="eyebrow">Controlled acquisition study</div><h1>Find the number.<br>Confirm with Enter.</h1>
+  <p>Look at the requested numbered control. When a lens appears, look into it and confirm the highlighted control with <strong>Enter</strong>. The first accepted selection ends each task, including a wrong selection.</p>
+  <p>There are 72 tasks: 24 in each of three conditions. Tasks advance automatically. Keep the page fullscreen. Escape, leaving fullscreen, or switching away ends the session and preserves completed results.</p>
+  <p id="status">Connecting to the lens…</p><p id="error" role="alert"></p>
+  <button id="start" disabled>Enter fullscreen &amp; start</button>
+</section>
+<main id="board" hidden><div id="surface"><div id="cue"></div><div id="targets"></div><div id="fixation" class="fixation">+</div><div id="progress"></div></div></main>
+<section id="finish" hidden><div class="eyebrow">Session results</div><h1 id="finishTitle"></h1><p id="finishNote"></p><div id="summary"></div><a class="download" href="/results.json" download="acquisition-results.json">Download JSON</a><a class="download" href="/results.csv" download="acquisition-results.csv">Download CSV</a></section>
+<script>
+  const $=id=>document.getElementById(id);
+  let current=null, rendered=null, running=false, finishing=false, acked=null, screenSize=null;
+  const frames=()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+  async function api(path,body){
+    const response=await fetch(path,body===undefined?{cache:'no-store'}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const value=await response.json(); if(!response.ok)throw new Error(value.error||'Study connection failed');return value;
+  }
+  function fit(state){
+    $('surface').style.width=state.width+'px';$('surface').style.height=state.height+'px';
+    $('surface').style.transform=`scale(${innerWidth/state.width},${innerHeight/state.height})`;
+  }
+  async function finish(state){
+    if(finishing)return;finishing=true;running=false;$('board').hidden=true;$('setup').hidden=true;$('finish').hidden=false;
+    $('finishTitle').textContent=state.phase==='complete'?'Session complete':'Session interrupted';
+    $('finishNote').textContent=`${state.completed} of ${state.total} tasks completed. ${state.interruption||'Results reflect accepted dry-run selections.'}`;
+    const report=await api('/results.json');const table=document.createElement('table');
+    const header=table.insertRow();for(const label of ['Condition','Completed','Correct','Median time']){const cell=document.createElement('th');cell.textContent=label;header.append(cell);}
+    for(const [mode,row] of Object.entries(report.summary)){const tr=table.insertRow();for(const value of [mode,`${row.completed_trials} / ${row.planned_trials}`,row.correct_trials,row.median_acquisition_time_ms===null?'—':(row.median_acquisition_time_ms/1000).toFixed(2)+' s'])tr.insertCell().textContent=value;}
+    $('summary').replaceChildren(table);
+  }
+  async function render(state){
+    current=state;
+    if(state.phase==='complete'||state.phase==='interrupted'){await finish(state);return;}
+    if(state.phase==='setup'){
+      $('status').textContent=`${state.pointer==='udp'?'UDP gaze':'Mouse proxy'} · participant ${state.participant} · ${state.overlay_connected?'Lens connected':'Waiting for lens overlay'}`;
+      $('start').disabled=!state.overlay_connected;return;
+    }
+    $('setup').hidden=true;$('board').hidden=false;fit(state);
+    const trial=state.trial,key=`${trial.trial_id}:${state.phase}`;
+    $('progress').textContent=`Task ${trial.trial_id} of ${state.total} · Enter confirms`;
+    if(key!==rendered){
+      rendered=key;
+      const visible=['presenting','active','feedback'].includes(state.phase);
+      $('fixation').hidden=visible;$('targets').hidden=!visible;
+      $('cue').textContent=visible?`Find ${trial.intended_target_id}`:'Look at the centre';
+      if(visible){
+        const controls=trial.targets.map(target=>{
+          const button=document.createElement('button');button.className='target';button.tabIndex=-1;button.textContent=target.id;
+          Object.assign(button.style,{left:target.x+'px',top:target.y+'px',width:target.width+'px',height:target.height+'px'});
+          button.addEventListener('mousedown',event=>event.preventDefault());return button;
+        });$('targets').replaceChildren(...controls);
+      }
+    }
+    if(state.phase==='presenting'&&acked!==trial.trial_id){
+      acked=trial.trial_id;await frames();
+      screenSize=[innerWidth,innerHeight];
+      try{await api('/api/presented',{trial_id:trial.trial_id,fullscreen:!!document.fullscreenElement,width:innerWidth,height:innerHeight});}
+      catch(error){await interrupt('presentation_failed');}
+    }
+  }
+  async function interrupt(reason='page_interrupted'){if(!running)return;running=false;try{await render(await api('/api/interrupt',{reason}));}catch(error){$('error').textContent=error.message;}}
+  $('start').addEventListener('click',async()=>{
+    try{$('start').disabled=true;await document.documentElement.requestFullscreen();await frames();
+      running=true;await render(await api('/api/start',{}));
+    }catch(error){$('error').textContent=error.message;$('start').disabled=false;}
+  });
+  // Enter belongs exclusively to the overlay. Browser focus must not activate a button.
+  document.addEventListener('keydown',event=>{
+    if(running&&event.key==='Enter')event.preventDefault();
+    if(running&&event.key==='Escape')interrupt('page_interrupted');
+  });
+  document.addEventListener('fullscreenchange',()=>{if(running&&!document.fullscreenElement)interrupt('fullscreen_exited');});
+  document.addEventListener('visibilitychange',()=>{if(running&&document.hidden)interrupt('page_hidden');});
+  addEventListener('resize',()=>{if(running&&screenSize&&(innerWidth!==screenSize[0]||innerHeight!==screenSize[1]))interrupt('viewport_changed');});
+  addEventListener('pagehide',()=>{if(running)fetch('/api/interrupt',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',keepalive:true});});
+  async function poll(){try{await render(await api('/api/state'));}catch(error){$('error').textContent=error.message;}finally{if(!finishing)setTimeout(poll,100);}}
+  poll();
+</script>
+</html>
